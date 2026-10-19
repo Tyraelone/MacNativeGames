@@ -53,8 +53,17 @@ static void supported_ids(const uint32_t *ids,uint64_t n){if(n>10||(!ids&&n))run
 static void supported_styles(uint32_t value){pthread_mutex_lock(&inputLock);styles=value;pthread_mutex_unlock(&inputLock);}
 static uint32_t style(const uint32_t *id){if(!id)runtime_fail("controller id pointer");input_log("style set",*id);pthread_mutex_lock(&inputLock);uint32_t v=enabled&&allowed&&*id==pad_id()?(styles&pad_style()):0;pthread_mutex_unlock(&inputLock);return v;}
 static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style);
+#if defined(KIRBY_GAME)
+static int any_pad_states(NpadState *out,int max,const uint32_t *id);
+#endif
 static int full_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,1);}
-static int handheld_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,2);}
+static int handheld_states(NpadState *out,int max,const uint32_t *id){
+#if defined(KIRBY_GAME)
+ return any_pad_states(out,max,id);
+#else
+ return pad_states(out,max,id,2);
+#endif
+}
 static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style){if(max<=0)return 0;if(id)input_log(want_style==2?"handheld state":"full-key state",*id);if(!out||!id)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);NpadState state={.sampling=++sample};if(enabled&&allowed&&*id==pad_id()&&want_style==pad_style()&&(styles&want_style)){
  state.attributes=1;for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=pending;pending=0;
  state.lx=32767*((int)keys[2]-(int)keys[0]);state.ly=32767*((int)keys[13]-(int)keys[1]);state.rx=32767*((int)keys[124]-(int)keys[123]);state.ry=32767*((int)keys[126]-(int)keys[125]);
@@ -63,7 +72,27 @@ static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_st
  if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;
  if(abs(pad.rx)>abs(state.rx))state.rx=pad.rx;if(abs(pad.ry)>abs(state.ry))state.ry=pad.ry;
  }*out=state;pthread_mutex_unlock(&inputLock);return 1;}
-static int disconnected_states(NpadState *out,int max,const uint32_t *id){if(id)input_log("joy-con state",*id);if(max<=0)return 0;if(!out)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);*out=(NpadState){.sampling=++sample};pthread_mutex_unlock(&inputLock);return 1;}
+#if defined(KIRBY_GAME)
+/* Kirby's movie/scene code polls several Npad state kinds. Report the same
+   keyboard/gamepad state for all of them so a skip press is visible even when
+   the caller asks for a Joy-Dual/handheld state in docked mode. */
+static int any_pad_states(NpadState *out,int max,const uint32_t *id){
+ if(id)input_log("any-pad state",*id);if(max<=0)return 0;if(!out)runtime_fail("controller output pointer");
+ pthread_mutex_lock(&inputLock);NpadState state={.sampling=++sample};state.attributes=1;
+ for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=pending;pending=0;
+ state.lx=32767*((int)keys[2]-(int)keys[0]);state.ly=32767*((int)keys[13]-(int)keys[1]);
+ RuntimeGamepadState pad;runtime_gamepad_read(&pad);state.buttons|=pad.buttons;
+ if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;
+ *out=state;pthread_mutex_unlock(&inputLock);return 1;
+}
+#endif
+static int disconnected_states(NpadState *out,int max,const uint32_t *id){
+#if defined(KIRBY_GAME)
+ return any_pad_states(out,max,id);
+#else
+ if(id)input_log("joy-con state",*id);if(max<=0)return 0;if(!out)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);*out=(NpadState){.sampling=++sample};pthread_mutex_unlock(&inputLock);return 1;
+#endif
+}
 static void hold_type(int type){if(type<0||type>1)runtime_fail("invalid joy hold type");holdType=type;(void)holdType;}
 static void disconnect(const uint32_t *id){if(!id)runtime_fail("disconnect id");input_log("disconnect",*id);if(*id==pad_id()){   /* only the pad in use: in handheld mode TOTK disconnects player 1 */pthread_mutex_lock(&inputLock);allowed=false;pthread_mutex_unlock(&inputLock);runtime_input_clear();}}
 /* Mouse and keyboard devices: the Mac keyboard drives the full-key controller, so the game sees no mouse

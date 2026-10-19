@@ -265,3 +265,13 @@ x2[2]  0x...f7d7  sdk+0x7977d7
 - 从启动就按住 `+`/`A`（`down 36` / `down 38`）：仍进 Movie.Scene。
 - 把 `sdk+0x452c4`（diag translate）入口改成 `ret`：仍断言，场景不变。
 - 这一步说明：Movie.Scene 的 Mint 异常不依赖具体 decoder、容器或按键时序；必须在 Mint 序列/异常处理层处理。
+
+### 第六轮：所有 Npad 状态都返回按键，仍不能跳过
+
+为了排除“Movie.Scene 轮询的是 JoyDual/Handheld 状态，因此看不到 A/+”这一可能，Kirby profile 下让所有 `GetNpadState` 变体都返回同一份键盘/手柄状态，并从启动就按住 `+`、`A`、`B`：
+
+```text
+[file: key 36 down][file: key 38 down][file: key 40 down]
+```
+
+结果仍进入 Movie.Scene 并断言。输入不是 Movie.Scene 的阻塞点；影片/Mint 场景的失败发生在轮询按键之前。
