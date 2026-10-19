@@ -76,10 +76,36 @@ typedef void (*Free)(void *,void *);
 typedef void *(*Realloc)(void *,unsigned long,void *);
 struct Allocator{Alloc alloc;Free free;Realloc realloc;void *user;};
 struct Allocator g_nv_alloc,g_nv_devtools_alloc;
-static void graphics_allocator(Alloc a,Free f,Realloc r,void *u){g_nv_alloc=(struct Allocator){a,f,r,u};}
-static void graphics_dev_allocator(Alloc a,Free f,Realloc r,void *u){g_nv_devtools_alloc=(struct Allocator){a,f,r,u};}
+static void graphics_allocator(Alloc a,Free f,Realloc r,void *u){
+ g_nv_alloc=(struct Allocator){a,f,r,u};
+#if defined(KIRBY_GAME)
+ /* The older SDK's nv::mm allocator is internal. Forwarding the callbacks to
+    it keeps nv::Free/Alloc consistent; the host only stores them otherwise. */
+ typedef void (*SetAllocFn)(Alloc,Free,Realloc,void*);
+ static SetAllocFn original;
+ if(!original)original=(SetAllocFn)runtime_symbol("_ZN2nv20SetGraphicsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_");
+ if(original)original(a,f,r,u);
+#endif
+}
+static void graphics_dev_allocator(Alloc a,Free f,Realloc r,void *u){
+ g_nv_devtools_alloc=(struct Allocator){a,f,r,u};
+#if defined(KIRBY_GAME)
+ typedef void (*SetAllocFn)(Alloc,Free,Realloc,void*);
+ static SetAllocFn original;
+ if(!original)original=(SetAllocFn)runtime_symbol("_ZN2nv28SetGraphicsDevtoolsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_");
+ if(original)original(a,f,r,u);
+#endif
+}
 static void graphics_initialize(void *mem,unsigned long size){
  if(!mem||!size)runtime_fail("invalid graphics work memory");g_t0_ns=runtime_now_ns();mtl_init();fprintf(stderr,"[totk] native Metal graphics context initialized\n");
+#if defined(KIRBY_GAME)
+ /* The SDK 4.4 nv::mm allocator has its own initialized state; run its
+    InitializeGraphics bookkeeping after the host Metal context exists. */
+ typedef void (*InitFn)(void*,unsigned long);
+ static InitFn original;
+ if(!original)original=(InitFn)runtime_symbol("_ZN2nv18InitializeGraphicsEPvm");
+ if(original)original(mem,size);
+#endif
 }
 __attribute__((used,section("__DATA,totkgfx"))) static const GfxEntry init_entry={"_ZN2nv18InitializeGraphicsEPvm",graphics_initialize,"native Metal context"};
 __attribute__((used,section("__DATA,totkgfx"))) static const GfxEntry alloc_entry={"_ZN2nv20SetGraphicsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_",graphics_allocator,"game allocator callbacks"};

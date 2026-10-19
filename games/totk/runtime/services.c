@@ -357,7 +357,29 @@ uint64_t runtime_svc(unsigned num,uint64_t *r,const char *module,uint64_t offset
  case 0x0e: r[0]=0;r[1]=0;r[2]=15;return 0;
  case 0x25: {uint64_t id;pthread_threadid_np(NULL,&id);r[0]=0;r[1]=id;return 0;}
  case 0x10:r[0]=0;return 0;
- case 0x26: {uint32_t result=0;if(r[1]&&r[2]>=4)memcpy(&result,(void *)(uintptr_t)r[1],4);fprintf(stderr,"[totk] guest Break reason=%llx result=%x\n",(unsigned long long)r[0],result);runtime_trace_guest(r[29],r[30]);if(r[0]&0x80000000ULL)return 0;runtime_fail("original SDK Break");}
+ case 0x26: {uint32_t result=0;if(r[1]&&r[2]>=4)memcpy(&result,(void *)(uintptr_t)r[1],4);fprintf(stderr,"[totk] guest Break reason=%llx result=%x\n",(unsigned long long)r[0],result);
+#if defined(KIRBY_GAME)
+  { uint64_t sp = ((uint64_t *)r)[100]; uint8_t buf[4096]; mach_vm_size_t got = 0;
+    fprintf(stderr, "[kirby-break] guest sp=%#llx\n", (unsigned long long)sp);
+    if (sp && mach_vm_read_overwrite(mach_task_self(), sp, sizeof buf, (uintptr_t)buf, &got) == KERN_SUCCESS) {
+      for (unsigned i = 0; i + 4 < got; ) {
+        if (buf[i] >= 0x20 && buf[i] < 0x7f) {
+          unsigned j = i; while (j < got && buf[j] >= 0x20 && buf[j] < 0x7f) j++;
+          if (j - i >= 4) { fprintf(stderr, "[kirby-break] +%#x: %.*s\n", i, (int)(j - i > 300 ? 300 : j - i), buf + i); }
+          i = j;
+        } else i++;
+      }
+    }
+  }
+#endif
+  fprintf(stderr, "[kirby-break] thread=%#x\n", runtime_thread_current_handle());
+  runtime_trace_guest(r[29],r[30]);
+#if defined(KIRBY_GAME)
+  return 0;   /* experimental: let the asserting thread continue and log the next stop */
+#else
+  if(r[0]&0x80000000ULL)return 0;runtime_fail("original SDK Break");
+#endif
+ }
  case 0x27: {size_t n=r[1];if(n>65536)runtime_fail("debug string too long");fwrite((void *)(uintptr_t)r[0],1,n,stderr);r[0]=0;return 0;}
  case 0x0b:{int64_t ns=(int64_t)r[0];if(ns>0){struct timespec t={ns/1000000000,ns%1000000000};nanosleep(&t,NULL);}r[0]=0;return 0;}
  default:fprintf(stderr,"[totk] unimplemented SVC 0x%x at %s+%#llx\n",num,module,(unsigned long long)offset);if(num==0x1f)fprintf(stderr,"[totk] named port %.12s\n",(const char *)(uintptr_t)r[1]);runtime_trace_guest(r[29],r[30]);runtime_fail("system service not implemented");return 0;

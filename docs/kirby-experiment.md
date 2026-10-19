@@ -154,3 +154,36 @@ TOTK_PROFILE_DIR="$WORK/profile" \
 - 仓库不含游戏、密钥、字体或存档；实验 App 和中间文件都在项目目录外。
 - 本实验只针对用户自己的 4.1.0 中文 NSP，未验证其他版本、DLC、其他区域或其他游戏。
 - `kirby-experiment` 分支上的改动是实验性的；TOTK 的已验证路径应继续用原有默认编译（不加 `KIRBY_GAME`）。
+
+## 2026-10-19 继续推进：到达 Movie.Scene
+
+上一版停在 account 断言。之后补了 `nn::account::OpenPreselectedUser` 的主机重定向，并让旧 SDK 的 `nv::mm` 分配器拿到原始回调（`gfx_bridge.c`），启动链继续前进：
+
+1. 通过 account 打开/关闭
+2. 初始化着色器缓存，启动原生 `totk_xlate` 服务
+3. 建立 NVN 交换链，开始以 60 fps 出帧（`window visible ... frame 100+`）
+4. 加载 `content:/mov/Product/ImageMovie.mp4`（1920×1080 H.264 / 44.1→48 kHz AAC，46.2 秒）
+5. 进入 `Movie.Scene`，创建视频/音频 `movie::Decoder`
+6. 用 `KIRBY_MOVIE_FILE` 指向预先解码的 NV12 帧后，视频解码器能返回第 0 帧
+
+目前卡在 **Movie.Scene 的 Mint 异常**：`Movie.Scene.initAsync` 线程在拿到第一帧后仍会 `svcBreak`，Mint 侧没有继续到标题场景；画面仍是黑色。视频/音频 Extractor 对 MP4 返回 EOS（`send_input size=0 flags=EOS`），说明旧 SDK 的 MP4 解复用还没有在宿主上跑通。为了继续，试过把 `mint/Seq.bin` 的 `MovieOpening` 改成 `Finished`，游戏仍进入 Movie.Scene，说明序列状态不是按这个字符串直接选路的。
+
+当前可复现的实验命令（`kirby-work` 内）：
+
+```sh
+# 预先解码开场影片为 NV12 帧（4.0 GB，30 fps，1385 帧）
+ffmpeg -i ImageMovie.mp4 -an -vf scale=1920:1080 -pix_fmt nv12 -f rawvideo -y ImageMovie.nv12
+
+KIRBY_MOVIE_FILE="$PWD/ImageMovie.nv12" \
+KIRBY_AUDIO_REAL=1 TOTK_SHADER_SERVICE=native \
+TOTK_ROMFS="$PWD/extracted/romfs" TOTK_ROMFS_PATCHES=0 \
+TOTK_SHARED_FONTS="/Users/duanziyu/Documents/deepseek-harness/default-workspace/TOTK_build/totk/extracted/firmware/shared-fonts" \
+TOTK_PROFILE_DIR="$PWD/profile" \
+./build-kirby/kirby-native rewritten2 boot
+```
+
+- `KIRBY_MOVIE_FILE` 不存在时退回真正的黑帧/静音 stub，不再走 NvMM。
+- `KIRBY_TRAP_PROBE=1` 会在第一个 SDK abort trap 打印 x0..x7 并退出，用于定位 Mint 异常。
+- `TOTK_TRAP_PROBE` 不是正式开关，只用于诊断。
+
+**下一处最小工作**：让 Movie.Scene 的 Mint 脚本不再异常。方向有两个：实现旧 SDK 的 MP4 Extractor/MediaData（让 `send_input` 真正拿到 H.264 样本），或者从 `mint/Seq.bin`/存档层跳过 `MovieOpening`。在此之前，程序能持续出帧，但不会进入标题菜单。

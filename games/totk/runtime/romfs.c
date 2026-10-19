@@ -217,6 +217,7 @@ static void handle_source(uint64_t h,const Entry *e,int *fd,uint64_t *base,uint6
 }
 unsigned runtime_romfs_read(uint64_t *out,uint64_t h,int64_t offset,void *buffer,uint64_t size) {
  Entry e;if(!out||offset<0||!handle_entry(h,&e))return INVALID;int fd;uint64_t base,fsize;handle_source(h,&e,&fd,&base,&fsize);if((uint64_t)offset>fsize||(!buffer&&size))return INVALID;
+ { static int rdlog=-1; if(rdlog<0)rdlog=getenv("TOTK_FS_READ_LOG")!=NULL; if(rdlog)fprintf(stderr,"[rom-read] %s off=%lld size=%llu\n",entry_name(e),(long long)offset,(unsigned long long)size); }
  uint64_t n=size;if(n>fsize-(uint64_t)offset)n=fsize-(uint64_t)offset;uint64_t done=0;
  static _Atomic int profile_mode=-1;int profile=atomic_load(&profile_mode);if(profile<0){profile=getenv("TOTK_FS_TIMING")!=NULL;atomic_store(&profile_mode,profile);}uint64_t prep_start=profile?runtime_now_ns():0;
  dm_guest_write_prepare(buffer,(size_t)n);

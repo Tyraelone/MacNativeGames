@@ -30,6 +30,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #if !__has_include(<vpx/vpx_decoder.h>)
 /* No libvpx for this target (the iPhone build has none yet): no override, so the movie library runs its own decoder,
    which still aborts at the first cutscene there. Build libvpx for iOS (or use VideoToolbox's VP9) to enable this file. */
@@ -53,7 +57,9 @@ typedef struct { int index; unsigned flags; int64_t time; } Ready;
 typedef struct { int index, offset, size; int64_t time; unsigned flags; } Pending;
 typedef struct {
     void *guest;                         /* the movie::Decoder object */
-    int format, configured, started, w, h, eos_in, format_sent, last_error;
+    int format, configured, started, w, h, eos_in, format_sent, last_error, stub, stub_audio;
+    char mime[64];
+    uint8_t *movie_frames; size_t movie_frame_bytes; int movie_frame_count, movie_frame_index;
     void **events;                       /* DecoderEvents: EventType* per EV_* */
     vpx_codec_ctx_t vpx; int vpx_live;
     uint8_t *in[IN_BUFS]; int in_free[IN_BUFS], nin_free;
@@ -211,7 +217,7 @@ static int decode_one(Movie *m, Signals *s, const Pending *p) {
             }
         }
         m->decode_ns += now_ns() - t0;
-        if (m->frames && m->frames % 300 == 0) LOG("%llu frames, decode %.2f ms per frame", (unsigned long long)m->frames, m->decode_ns / 1e6 / (double)m->frames);
+        if (m->movie_frames && m->frames % 300 == 0) LOG("%llu frames, decode %.2f ms per frame", (unsigned long long)m->frames, m->decode_ns / 1e6 / (double)m->frames);
     }
     if (p->flags & FLAG_EOS && !m->eos_in) {
         m->eos_in = 1; int slot = free_out(m); if (slot < 0) runtime_fail("movie decoder: no slot for end of stream");
@@ -240,8 +246,20 @@ typedef void (*ctor_fn)(void *, int, int, int, int);
 static void h_ctor(void *obj, int type, int format, int mode, int priority) {
     if (!g_ready) guest_init();
     if (type != TYPE_VP9 || mode != MODE_BUFFER) {
+#if defined(KIRBY_GAME)
+        Movie *s = calloc(1, sizeof *s); if (!s) runtime_fail("movie stub allocation");
+        s->guest = obj; s->format = format; s->stub = 1; pthread_mutex_init(&s->mu, NULL);
+        pthread_mutex_lock(&g_lock); int i = 0;
+        while (i < MAX_MOVIES && g_movies[i] && g_movies[i]->guest != obj) i++;
+        if (i == MAX_MOVIES) runtime_fail("movie decoder table full");
+        g_movies[i] = s; pthread_mutex_unlock(&g_lock);
+        ((void **)obj)[0] = G.vptr; ((void **)obj)[1] = s;
+        LOG("decoder type %d mode %d format %d: host stub (no NvMM fallback)", type, mode, format);
+        return;
+#else
         LOG("decoder type %d mode %d format %d: left to the library (only VP9 in buffer mode runs on the host)", type, mode, format);
         ((ctor_fn)G.orig[MOVIE_CTOR])(obj, type, format, mode, priority); return;
+#endif
     }
     Movie *m = calloc(1, sizeof *m); if (!m) runtime_fail("movie decoder allocation");
     m->guest = obj; m->format = format; pthread_mutex_init(&m->mu, NULL);
@@ -271,6 +289,39 @@ static void h_d0(void *obj) { if (find(obj)) destroy(obj); ((obj_fn)G.orig[MOVIE
 typedef int (*md_fn)(void *, void *);
 static int h_configure(void *obj, void *format) {
     Movie *m = find(obj); if (!m) return ((md_fn)G.orig[MOVIE_CONFIGURE])(obj, format);
+    if (m->stub) {
+        const char *mime = NULL; int w = 0, h = 0;
+        if (format) { G.md_find_string(format, "mime", &mime); G.md_find_int32(format, "width", &w); G.md_find_int32(format, "height", &h); }
+        if (mime) snprintf(m->mime, sizeof m->mime, "%s", mime);
+        m->stub_audio = mime && !strncmp(mime, "audio/", 6);
+        m->w = m->stub_audio ? 0 : (w > 0 ? w : 1920);
+        m->h = m->stub_audio ? 0 : (h > 0 ? h : 1080);
+        m->configured = 1; m->last_error = 0;
+        if (!m->stub_audio) {
+            size_t bytes = (size_t)(m->w * m->h * 3 / 2);
+            m->movie_frame_bytes = bytes;
+            const char *path = getenv("KIRBY_MOVIE_FILE");
+            if (!path) path = "ImageMovie.nv12";
+            int fd = open(path, O_RDONLY);
+            if (fd >= 0) {
+                struct stat st;
+                if (fstat(fd, &st) == 0 && st.st_size >= (off_t)bytes) {
+                    m->movie_frames = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+                    if (m->movie_frames != MAP_FAILED) { m->movie_frame_count = (int)(st.st_size / (off_t)bytes); m->out_bytes[0] = (int)bytes; }
+                    else m->movie_frames = NULL;
+                }
+                close(fd);
+            }
+            LOG("stub video frames %s: %d frames of %zu bytes", m->movie_frames ? path : "(missing)", m->movie_frame_count, bytes);
+        } else {
+            size_t bytes = 0x1000;
+            if (!(m->out[0] = calloc(1, bytes))) runtime_fail("movie stub output buffer");
+            m->out_bytes[0] = (int)bytes;
+        }
+        reset_queues(m);
+        LOG("stub decoder configured: mime=%s %dx%d format=%d%s", mime ? mime : "(none)", w, h, m->format, m->stub_audio ? " (audio silence)" : " (video frames)");
+        return ST_OK;
+    }
     if (!format) return ST_NULL;
     if (m->format != FORMAT_NV12) { LOG("【红】output format %d not implemented on the host (NV12 = 4 only)", m->format); return ST_UNSUPPORTED; }
     const char *mime = NULL; int w = 0, h = 0;
@@ -308,6 +359,13 @@ static int h_get_output_format(void *obj, void *md) {
     Movie *m = find(obj); if (!m) return ((md_fn)G.orig[MOVIE_GET_OUTPUT_FORMAT])(obj, md);
     if (!md) return ST_NULL;
     if (!m->configured) return ST_ERROR;
+    if (m->stub_audio) {
+        G.md_set_string(md, "mime", "audio/raw");
+        G.md_set_int32(md, "sample-rate", 48000);
+        G.md_set_int32(md, "channel-count", 2);
+        G.md_set_int32(md, "audio-format", 2);
+        return ST_OK;
+    }
     set_format(m, md); return ST_OK;
 }
 typedef int (*int_fn)(void *);
@@ -316,7 +374,7 @@ static int h_start(void *obj) {
     Signals s = {0};
     pthread_mutex_lock(&m->mu);
     if (!m->configured) { pthread_mutex_unlock(&m->mu); return ST_NOT_CONFIGURED; }
-    m->started = 1; note(m, &s, EV_INPUT);
+    m->started = 1; m->movie_frame_index = 0; note(m, &s, EV_INPUT); if (m->stub && !m->stub_audio) note(m, &s, EV_OUTPUT);
     pthread_mutex_unlock(&m->mu); fire(&s);
     return ST_OK;
 }
@@ -346,6 +404,7 @@ typedef int (*pp_fn)(void *, int *, int *);
 static int h_acquire_input(void *obj, int *index, int *remaining) {
     Movie *m = find(obj); if (!m) return ((pp_fn)G.orig[MOVIE_ACQUIRE_INPUT])(obj, index, remaining);
     if (!index || !remaining) return ST_NULL;
+    if (m->stub) { *index = 0; *remaining = 0; return m->started ? ST_OK : ST_NO_INPUT; }
     pthread_mutex_lock(&m->mu);
     *index = -1; *remaining = 0; int st = ST_NO_INPUT;
     if (m->started && m->nin_free > 0) {
@@ -366,6 +425,20 @@ typedef int (*send_fn)(void *, int, int, int, int64_t, unsigned);
 static int h_send_input(void *obj, int index, int offset, int size, int64_t time, unsigned flags) {
     Movie *m = find(obj); if (!m) return ((send_fn)G.orig[MOVIE_SEND_INPUT])(obj, index, offset, size, time, flags);
     if (index < 0 || index >= IN_BUFS || offset < 0 || size < 0 || (int64_t)offset + size > IN_CAP) return ST_ERROR;
+    if (m->stub) {
+        Signals s = {0};
+        pthread_mutex_lock(&m->mu);
+        if (!m->started) { pthread_mutex_unlock(&m->mu); return ST_ERROR; }
+        if (m->stub_audio) {
+            m->out_held[0] = 1;
+            m->ready[0] = (Ready){0, 0, time};
+            m->nready = 1;
+        }
+        LOG("stub send_input index=%d size=%d time=%lld flags=%u%s", index, size, (long long)time, flags, m->stub_audio ? " -> EOS" : " (ignored, frames from file)");
+        note(m, &s, EV_OUTPUT);
+        pthread_mutex_unlock(&m->mu); fire(&s);
+        return ST_OK;
+    }
     Signals s = {0};
     pthread_mutex_lock(&m->mu);
     if (!m->started) { pthread_mutex_unlock(&m->mu); return ST_ERROR; }
@@ -381,9 +454,19 @@ static int h_acquire_output(void *obj, int *index, int64_t *time, unsigned *flag
     if (!index || !time || !flags || !remaining) return ST_NULL;
     pthread_mutex_lock(&m->mu);   /* paced frames become ready only at presents (movie_host_tick): one per game frame */
     *index = -1; *time = 0; *flags = 0; *remaining = 0; int st = ST_NO_OUTPUT;
+    if (m->stub && !m->stub_audio) {
+        if (m->movie_frames && m->movie_frame_index < m->movie_frame_count) {
+            *index = 0; *time = (int64_t)m->movie_frame_index * 33333; *flags = 0; st = ST_OK;
+            if ((m->movie_frame_index % 120) == 0) LOG("stub video frame %d/%d", m->movie_frame_index, m->movie_frame_count);
+        } else {
+            *index = -1; *time = 0; *flags = 4; st = ST_OK;
+        }
+        pthread_mutex_unlock(&m->mu); return st;
+    }
     if (m->nready > 0) {
         Ready r = m->ready[0]; memmove(m->ready, m->ready + 1, (size_t)--m->nready * sizeof m->ready[0]);
         *index = r.index; *time = r.time; *flags = r.flags; *remaining = m->nready; st = ST_OK;
+        if (m->stub) LOG("stub acquire_output mime=%s index=%d time=%lld flags=%u", m->mime, r.index, (long long)r.time, r.flags);
     }
     pthread_mutex_unlock(&m->mu);
     return st;
@@ -393,6 +476,14 @@ static int h_get_output(void *obj, int index, void *buf) {
     if (!buf) return ST_NULL;
     G.buf_set_range(buf, 0, 0);
     pthread_mutex_lock(&m->mu);
+    if (m->stub && !m->stub_audio && m->movie_frames && m->movie_frame_index < m->movie_frame_count) {
+        uint8_t *dst = G.buf_base(buf);
+        if (dst && G.buf_capacity(buf) >= m->movie_frame_bytes) {
+            memcpy(dst, m->movie_frames + (size_t)m->movie_frame_index * m->movie_frame_bytes, m->movie_frame_bytes);
+            G.buf_set_range(buf, 0, (int)m->movie_frame_bytes);
+            pthread_mutex_unlock(&m->mu); return ST_OK;
+        }
+    }
     int st = ST_ERROR;
     if (index >= 0 && index < OUT_BUFS && m->out_held[index]) {
         int bytes = m->out_bytes[index]; uint8_t *dst = G.buf_base(buf);
@@ -405,7 +496,7 @@ static int h_get_output(void *obj, int index, void *buf) {
 static int h_get_output_size(void *obj, int *size, int *count) {
     Movie *m = find(obj); if (!m) return ((pp_fn)G.orig[MOVIE_GET_OUTPUT_SIZE])(obj, size, count);
     if (!size || !count) return ST_NULL;
-    *count = 1; *size = m->configured ? frame_bytes(m) : 0;
+    *count = 1; *size = m->configured ? (m->stub_audio ? 0x1000 : (m->movie_frame_bytes ? (int)m->movie_frame_bytes : frame_bytes(m))) : 0;
     return ST_OK;
 }
 typedef int (*i_fn)(void *, int);
@@ -413,6 +504,10 @@ static int h_release_output(void *obj, int index) {
     Movie *m = find(obj); if (!m) return ((i_fn)G.orig[MOVIE_RELEASE_OUTPUT])(obj, index);
     Signals s = {0};
     pthread_mutex_lock(&m->mu);
+    if (m->stub && !m->stub_audio) {
+        if (index == 0 && m->movie_frame_index < m->movie_frame_count) m->movie_frame_index++;
+        pthread_mutex_unlock(&m->mu); return ST_OK;
+    }
     int st = ST_ERROR;
     if (index >= 0 && index < OUT_BUFS && m->out_held[index]) {
         int queued = 0; for (int i = 0; i < m->nready; i++) queued |= m->ready[i].index == index;
@@ -431,6 +526,13 @@ static int h_get_output_buffer_format(void *obj, int index, void *md) {
     Movie *m = find(obj); if (!m) return ((ib_fn)G.orig[MOVIE_GET_OUTPUT_BUFFER_FORMAT])(obj, index, md);
     if (!md) return ST_NULL;
     if (index < 0 || index >= OUT_BUFS || !m->out_held[index]) return ST_ERROR;
+    if (m->stub_audio) {
+        G.md_set_string(md, "mime", "audio/raw");
+        G.md_set_int32(md, "sample-rate", 48000);
+        G.md_set_int32(md, "channel-count", 2);
+        G.md_set_int32(md, "audio-format", 2);
+        return ST_OK;
+    }
     set_format(m, md); return ST_OK;
 }
 static int h_get_output_md(void *obj, int index, void *buf, void *md) {
@@ -453,6 +555,9 @@ void *runtime_movie_override(const char *name) {
     for (int i = 0; i < MOVIE_ENTRIES; i++) if (!strcmp(name, NAMES[i])) return ENTRIES[i];
     /* aliases: the base-object constructor and the complete-object destructor share code with the entries above */
     if (!strcmp(name, "_ZN5movie7DecoderC2ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeEi")) return h_ctor;
+    /* SDK 4.4 (Kirby) has no priority argument in the constructor. */
+    if (!strcmp(name, "_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeE")) return h_ctor;
+    if (!strcmp(name, "_ZN5movie7DecoderC2ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeE")) return h_ctor;
     if (!strcmp(name, "_ZN5movie7DecoderD1Ev")) return h_d2;
     return NULL;
 }
