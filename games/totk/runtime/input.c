@@ -220,6 +220,8 @@ static void *input_file(void *arg) {
             fprintf(stderr,"[totk-input] file: key %u down\n",code);runtime_input_key_synthetic(code,1);
         } else if (sscanf(line, "up %u %n", &code, &used) == 1 && used && !line[used] && code < 128) {
             fprintf(stderr,"[totk-input] file: key %u up\n",code);runtime_input_key_synthetic(code,0);
+        } else if (sscanf(line, "wait %u %n", &ms, &used) == 1 && used && !line[used] && ms <= 60000) {
+            fprintf(stderr, "[totk-input] file: wait %u ms\n", ms); usleep(ms * 1000);
         } else if (sscanf(line, "key %u %u %n", &code, &ms, &used) == 2 && used && !line[used] && code < 128 && ms > 0 && ms <= 5000) {
             fprintf(stderr, "[totk-input] file: key %u for %u ms\n", code, ms);
             runtime_input_key_synthetic(code, 1); usleep(ms * 1000); runtime_input_key_synthetic(code, 0);

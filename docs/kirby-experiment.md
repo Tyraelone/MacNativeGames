@@ -436,3 +436,25 @@ h=0x100c movie::Decoder::GetOutputFormat(...)
 检查 `ImageMovie.nv12` 本身：frame 0/120 的 Y 是 16（黑），frame 421 的 Y 约 143（有内容），frame 600/1200 更亮。说明解码数据和拷贝都在，问题在**显示/合成**：很可能 Movie.Scene 用的是独立的 VI layer，当前 frontend 只把主 NVN window 合成到 Metal，第二层没有上屏。
 
 下一步应检查 `nn::vi::CreateLayer`/`SetLayerScalingMode` 的第二次调用及 movie layer 的 buffer，确认视频是画进 NVN framebuffer 还是单独 VI 层。
+
+### 第十四轮：进入 TitleMenu
+
+在 Movie.Scene 已经能持续运行后，按 `+` / `A` / `B` 可以跳过开场，日志出现：
+
+```text
+rom content:/yaml/Scn/TitleMenu/...
+rom content:/yaml/Mint/TitleMenu.Scene/...
+```
+
+抓到了标题菜单画面：Kirby 标志、Nintendo/HAL 版权、`NOTHING TO DO` 菜单。画面目前上下颠倒（VI 层的方向/翻转还没修），但这是可验证的 TitleMenu 场景。
+
+新增 input 命令 `wait <ms>`，因此可以用一个输入脚本自动跳过：
+
+```text
+wait 10000
+key 36 500
+key 38 500
+key 40 500
+```
+
+在 `KIRBY_MOVIE_NO_PUMP=1` 和 3 帧 `movie-head.nv12` 下，这个脚本也能稳定进入 TitleMenu；`KIRBY_MOVIE_NO_PUMP=1` 是必要的，否则 30fps tick pump 会在小影片上把 guest 音频/视频线程打崩。
