@@ -40,10 +40,13 @@ static void kirby_trap_probe(uint64_t x0, uint64_t x1, uint64_t x2, uint64_t x3,
     for (unsigned i = 0; i < 8; i++) fprintf(stderr, " %#llx", (unsigned long long)regs[i]);
     fputc('\n', stderr);
     for (unsigned i = 0; i < 8; i++) {
-        char buf[256] = {0}; mach_vm_size_t got = 0;
-        if (regs[i] > 0x10000 && mach_vm_read_overwrite(mach_task_self(), regs[i], sizeof buf - 1, (uintptr_t)buf, &got) == KERN_SUCCESS) {
-            unsigned n = 0; while (n < got && buf[n] >= 0x20 && buf[n] < 0x7f && n < 200) n++;
-            if (n >= 4) { buf[n] = 0; fprintf(stderr, "[kirby-trap] x%u str=%.200s\n", i, buf); }
+        uint8_t buf[128] = {0}; mach_vm_size_t got = 0;
+        if (regs[i] > 0x10000 && mach_vm_read_overwrite(mach_task_self(), regs[i], sizeof buf, (uintptr_t)buf, &got) == KERN_SUCCESS && got == sizeof buf) {
+            fprintf(stderr, "[kirby-trap] x%u bytes:", i);
+            for (unsigned k = 0; k < 32; k++) fprintf(stderr, " %02x", buf[k]);
+            fputc('\n', stderr);
+            unsigned n = 0; while (n < 100 && buf[n] >= 0x20 && buf[n] < 0x7f) n++;
+            if (n >= 4) fprintf(stderr, "[kirby-trap] x%u str=%.100s\n", i, (char *)buf);
         }
     }
     fflush(stderr);

@@ -223,3 +223,20 @@ export KIRBY_MOVIE_FILE="$HERE/Resources/movie-head.nv12"   # 影片前 3 帧，
 2. 在 Mint 序列/场景创建层跳过 `MovieOpening`。
 
 在这之前，App 只能显示已抓到的第一张开场帧，不能进入标题。
+
+### 第三轮：断言来自 Mint VM，而不是解码器
+
+用 `KIRBY_TRAP_PROBE=1` 打印 abort trap 的 x0..x7 和寄存器指向的内存，x7 指向的是一段 Mint 运行时字符串：
+
+```text
+x7 bytes: 69 6f 6e 73 41 6e 64 45 72 72 6f 72 73 53 6f 6f 6e 00 ...
+x7 str:  ionsAndErrorsSoon
+```
+
+前面 7 个字节被截掉，完整形态应是 `ExceptionsAndErrorsSoon` 一类的 Mint 异常类型名。结合“`GetOutputBuffer` 未被调用”这一事实，可以把原因归为：
+
+- 视频 stub 已返回第 0 帧；
+- 但 `Movie.Scene` 的 Mint 状态机在取帧/释放帧之前就抛出了异常；
+- 所以继续调 NV12 拷贝或音频字段不会推进场景。
+
+下一步应该直接处理 Mint 异常/场景创建，而不是继续补 movie decoder 的输出格式。
