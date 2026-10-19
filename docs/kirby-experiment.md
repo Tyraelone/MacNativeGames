@@ -299,3 +299,26 @@ python3 games/kirby/tools/import_ryujinx_save.py \
 
 当前环境无法稳定连接到 Ryujinx 的更新服务器，下载/安装需要用户在本机完成；
 拿到存档后就可以直接验证跳过 Movie.Scene 后的标题、菜单和第一关。
+
+### 第七轮：开始直接检查 guest 内存里的 Mint 模块
+
+新增 Kirby 专用诊断命令（`TOTK_INPUT_FILE`）：
+
+```text
+scan <ascii>                 在 guest 内存中搜索 ASCII 字符串
+scanptr <value> [start end]  搜索 8 字节指针
+dump <addr> <len>            hex dump
+```
+
+实测在 `Movie.Scene` 阶段：
+
+- `scan MovieOpening` 找到堆上的字符串表 `0x3dc522d80`，内容正是：
+
+```text
+MovieOpening / ExecChildSeq / Finished / XBIN4 ...
+```
+
+- `scanptr 0x3dc522d80` 在附近 32 MB 内没有找到直接指针，说明 Mint 代码使用的是模块内偏移/哈希，而不是保存绝对字符串地址。
+- `scan XBIN4` 显示 RomFS 里的模块被加载到 `0x334800000` 一带；`Default.bin` 等大模块和堆上的脚本副本是分开的。
+
+这说明下一步可以沿“找到包含 MovieOpening 的 Mint 模块基址 → 解析模块的类/函数表”走，而不是继续猜 decoder。

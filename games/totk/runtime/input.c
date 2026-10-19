@@ -263,6 +263,17 @@ static void *input_file(void *arg) {
             runtime_frame_step_pin(ms);
         } else if (!strcmp(line, "threads\n")) {   /* every guest thread's wait state and guest return chain, now (a hang: what is each thread waiting for) */
             runtime_dump_threads();
+#if defined(KIRBY_GAME)
+        } else if (!strncmp(line, "scan ", 5)) {
+            line[strcspn(line, "\r\n")] = 0; extern void runtime_kirby_memscan(const char *); runtime_kirby_memscan(line + 5);
+        } else if (!strncmp(line, "scanptr ", 8)) {
+            char *e1; uint64_t v = strtoull(line + 8, &e1, 0), s0 = 0x300000000ULL, e0 = 0x8000000000ULL;
+            if (e1 && *e1) s0 = strtoull(e1, &e1, 0); if (e1 && *e1) e0 = strtoull(e1, NULL, 0);
+            extern void runtime_kirby_scanptr(uint64_t, uint64_t, uint64_t); runtime_kirby_scanptr(v, s0, e0);
+        } else if (!strncmp(line, "dump ", 5)) {
+            char *end; uint64_t a = strtoull(line + 5, &end, 0); unsigned long n = strtoul(end, NULL, 0);
+            extern void runtime_kirby_memdump(uint64_t, size_t); if (n) runtime_kirby_memdump(a, n);
+#endif
         } else if (!strcmp(line, "close\n")) { runtime_front_request_close(); break; }
         else runtime_fail("invalid diagnostic input command");
     }

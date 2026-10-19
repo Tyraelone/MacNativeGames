@@ -278,6 +278,79 @@ void *runtime_override(const char *name) {
 #endif
  void *input=runtime_input_override(name);if(input)return input;void *font=runtime_font_override(name);if(font)return font;void *codec=runtime_codec_override(name);if(codec)return codec;void *movie=runtime_movie_override(name);if(movie)return movie;void *clock=runtime_time_override(name);if(clock)return clock;void *applet=runtime_applet_override(name);if(applet)return applet;void *swkbd=runtime_swkbd_override(name);if(swkbd)return swkbd;void *account=runtime_account_override(name);if(account)return account;void *fs=runtime_fs_override(name);if(fs)return fs;void *front=runtime_front_override(name);return front?front:runtime_gfx_override(name);
 }
+#if defined(KIRBY_GAME)
+#include <string.h>
+void runtime_kirby_memscan(const char *needle) {
+    size_t n = strlen(needle);
+    if (n < 4) { fprintf(stderr, "[kirby-scan] needle too short\n"); return; }
+    mach_vm_address_t a = 0x300000000ULL;
+    unsigned hits = 0;
+    while (a < 0x8000000000ULL) {
+        mach_vm_size_t size = 0; vm_region_basic_info_data_64_t info; mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj = 0;
+        mach_vm_address_t at = a;
+        if (mach_vm_region(mach_task_self(), &at, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count, &obj) != KERN_SUCCESS) break;
+        if (obj) mach_port_deallocate(mach_task_self(), obj);
+        if (size > (1ULL << 32)) size = 1ULL << 32;
+        if (info.protection & VM_PROT_READ) {
+            uint8_t *buf = malloc(1 << 20);
+            if (buf) {
+                for (mach_vm_address_t off = 0; off < size; off += (1 << 20)) {
+                    mach_vm_size_t want = size - off > (1 << 20) ? (1 << 20) : size - off, got = 0;
+                    if (mach_vm_read_overwrite(mach_task_self(), at + off, want, (uintptr_t)buf, &got) != KERN_SUCCESS) continue;
+                    for (mach_vm_size_t i = 0; i + n <= got; i++) {
+                        if (buf[i] != (uint8_t)needle[0] || memcmp(buf + i, needle, n)) continue;
+                        mach_vm_address_t hit = at + off + i;
+                        fprintf(stderr, "[kirby-scan] hit %#llx (%s) bytes:", (unsigned long long)hit, needle);
+                        for (unsigned k = 0; k < 64 && i + k < got; k++) fprintf(stderr, " %02x", buf[i + k]);
+                        fputc('\n', stderr);
+                        if (++hits >= 16) { free(buf); return; }
+                    }
+                }
+                free(buf);
+            }
+        }
+        a = at + size;
+    }
+    fprintf(stderr, "[kirby-scan] %u hits\n", hits);
+}
+#endif
+#if defined(KIRBY_GAME)
+void runtime_kirby_memdump(uint64_t addr, size_t len) {
+    uint8_t buf[256];
+    while (len) {
+        size_t n = len > sizeof buf ? sizeof buf : len; mach_vm_size_t got = 0;
+        if (mach_vm_read_overwrite(mach_task_self(), addr, n, (uintptr_t)buf, &got) != KERN_SUCCESS || got != n) { fprintf(stderr, "[kirby-dump] unreadable %#llx\n", (unsigned long long)addr); return; }
+        for (size_t i = 0; i < n; i += 16) {
+            fprintf(stderr, "[kirby-dump] %#llx:", (unsigned long long)(addr + i));
+            for (size_t k = 0; k < 16 && i + k < n; k++) fprintf(stderr, " %02x", buf[i + k]);
+            fputc('\n', stderr);
+        }
+        addr += n; len -= n;
+    }
+}
+void runtime_kirby_scanptr(uint64_t value, uint64_t start, uint64_t end) {
+    uint8_t *buf = malloc(1 << 20); if (!buf) return;
+    mach_vm_address_t a = start; unsigned hits = 0;
+    while (a < end) {
+        mach_vm_size_t size = 0; vm_region_basic_info_data_64_t info; mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj = 0; mach_vm_address_t at = a;
+        if (mach_vm_region(mach_task_self(), &at, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count, &obj) != KERN_SUCCESS) break;
+        if (obj) mach_port_deallocate(mach_task_self(), obj);
+        if (size > (1ULL << 32)) size = 1ULL << 32;
+        if (info.protection & VM_PROT_READ) {
+            for (mach_vm_address_t off = 0; off < size; off += (1 << 20)) {
+                mach_vm_size_t want = size - off > (1 << 20) ? (1 << 20) : size - off, got = 0;
+                if (mach_vm_read_overwrite(mach_task_self(), at + off, want, (uintptr_t)buf, &got) != KERN_SUCCESS) continue;
+                for (mach_vm_size_t i = 0; i + 8 <= got; i += 8) {
+                    uint64_t v; memcpy(&v, buf + i, 8);
+                    if (v == value) { fprintf(stderr, "[kirby-scanptr] %#llx -> %#llx\n", (unsigned long long)(at + off + i), (unsigned long long)value); if (++hits >= 32) { free(buf); return; } }
+                }
+            }
+        }
+        a = at + size;
+    }
+    fprintf(stderr, "[kirby-scanptr] %u hits\n", hits); free(buf);
+}
+#endif
 void runtime_core_checkpoint(void);
 uint64_t runtime_svc(unsigned num,uint64_t *r,const char *module,uint64_t offset) {
  runtime_core_checkpoint();
