@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <mach/mach.h>
 #include "mach_vm_compat.h"
+void runtime_describe_address(uint64_t a, char *out, size_t n);
 
 void runtime_game_patches(Module *main_module) {
     (void)main_module;
@@ -47,6 +48,16 @@ static void kirby_trap_probe(uint64_t x0, uint64_t x1, uint64_t x2, uint64_t x3,
             fputc('\n', stderr);
             unsigned n = 0; while (n < 100 && buf[n] >= 0x20 && buf[n] < 0x7f) n++;
             if (n >= 4) fprintf(stderr, "[kirby-trap] x%u str=%.100s\n", i, (char *)buf);
+        }
+    }
+    if (x2) {
+        uint64_t tab[16] = {0}; mach_vm_size_t got = 0;
+        if (mach_vm_read_overwrite(mach_task_self(), x2, sizeof tab, (uintptr_t)tab, &got) == KERN_SUCCESS && got == sizeof tab) {
+            for (unsigned i = 0; i < 16; i++) {
+                char where[128] = {0};
+                runtime_describe_address(tab[i], where, sizeof where);
+                fprintf(stderr, "[kirby-trap] x2[%u] %#llx %s\n", i, (unsigned long long)tab[i], where);
+            }
         }
     }
     fflush(stderr);

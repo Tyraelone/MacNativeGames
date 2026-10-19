@@ -240,3 +240,20 @@ x7 str:  ionsAndErrorsSoon
 - 所以继续调 NV12 拷贝或音频字段不会推进场景。
 
 下一步应该直接处理 Mint 异常/场景创建，而不是继续补 movie decoder 的输出格式。
+
+### 第四轮：异常表落在 sdk 的 Mint 数据区
+
+继续用 `KIRBY_TRAP_PROBE=1` 打印 abort trap 的 x2 指针（疑似 Mint 异常/类型表），前 16 个 8 字节值全部落在 `sdk` 的 **数据区**：
+
+```text
+x2[0]  0x...a000  sdk+0x942000
+x2[1]  0x...f7c1  sdk+0x7977c1
+x2[2]  0x...f7d7  sdk+0x7977d7
+...
+```
+
+`sdk` 的 `TEXT_END` 是 `0x40e8b0`，`0x7977c1` 已经远超代码段，说明这不是调用栈，而是 Mint VM 的**类型/异常表**。结合 `ExceptionsAndErrorsSoon` 一类的字符串，可以确认：Movie.Scene 的停止点是 **sdk 内 Mint VM 的脚本异常**，不是 main 或 movie decoder 的崩溃。
+
+这进一步说明：
+- 继续补 `movie::Decoder` 的 NV12/音频字段不会推进；
+- 需要从 Mint 脚本/序列层跳过 `MovieOpening`，或让 Mint VM 把该异常视为可恢复。
