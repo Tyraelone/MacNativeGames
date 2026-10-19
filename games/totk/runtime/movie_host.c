@@ -69,6 +69,7 @@ typedef struct {
     Ready decoded[OUT_BUFS]; int ndecoded;   /* paced: decoded, not due yet */
     uint64_t t0; int64_t pts0;               /* paced: host time and presentation time of the first frame handed over */
     uint64_t frames, decode_ns, errors, dropped;
+    int pump; pthread_t pump_thread;
     pthread_mutex_t mu;
 } Movie;
 
@@ -371,12 +372,28 @@ static int h_get_output_format(void *obj, void *md) {
     set_format(m, md); return ST_OK;
 }
 typedef int (*int_fn)(void *);
+static void *stub_pump(void *p) {
+    Movie *m = p;
+    while (m->pump) {
+        usleep(33333);
+        Signals s = {0};
+        pthread_mutex_lock(&m->mu);
+        if (m->started && !m->stub_audio) note(m, &s, EV_OUTPUT);
+        pthread_mutex_unlock(&m->mu);
+        fire(&s);
+    }
+    return NULL;
+}
 static int h_start(void *obj) {
     Movie *m = find(obj); if (!m) return ((int_fn)G.orig[MOVIE_START])(obj);
     Signals s = {0};
     pthread_mutex_lock(&m->mu);
     if (!m->configured) { pthread_mutex_unlock(&m->mu); return ST_NOT_CONFIGURED; }
     m->started = 1; m->movie_frame_index = 0; note(m, &s, EV_INPUT); if (m->stub && !m->stub_audio) { note(m, &s, EV_FORMAT); note(m, &s, EV_OUTPUT); }
+    if (m->stub && !m->stub_audio && !m->pump && !getenv("KIRBY_MOVIE_NO_PUMP")) {
+        m->pump = 1;
+        if (pthread_create(&m->pump_thread, NULL, stub_pump, m) == 0) pthread_detach(m->pump_thread);
+    }
     pthread_mutex_unlock(&m->mu); fire(&s);
     return ST_OK;
 }
@@ -436,6 +453,7 @@ static int h_send_input(void *obj, int index, int offset, int size, int64_t time
             m->ready[0] = (Ready){0, 0, time};
             m->nready = 1;
         }
+        if (!m->stub_audio && (flags & 4)) { flags &= ~4u; if (size <= 0) size = 1; }
         LOG("stub send_input index=%d size=%d time=%lld flags=%u%s", index, size, (long long)time, flags, m->stub_audio ? " -> EOS" : " (ignored, frames from file)");
         note(m, &s, EV_OUTPUT);
         pthread_mutex_unlock(&m->mu); fire(&s);

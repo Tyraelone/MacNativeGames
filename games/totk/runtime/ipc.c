@@ -180,22 +180,45 @@ static void generic_service(IpcSession *s, const IpcRequest *rq, IpcResponse *rs
    decoded frame. A zeroed generic reply makes the SDK's OpenAudioOut fail and
    the Mint scene throws; provide the small protocol surface the SDK needs.
    Audio is intentionally silence-only here. */
-typedef struct { uint32_t event_w; } AudoutOut;
+typedef struct { uint32_t event_w; uint64_t clients[16]; unsigned nclients; uint64_t played; uint32_t state; } AudoutOut;
 static void audout_out(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
     AudoutOut *o = s->state;
     switch (rq->cmd) {
-    case 0: { uint32_t v = 0; ipc_out(rs, &v, 4); return; }              /* GetAudioOutState: Stopped */
-    case 1: case 2: return;                                               /* Start / Stop */
-    case 3: case 7:
+    case 0: { uint32_t v = o ? o->state : 1; ipc_out(rs, &v, 4); return; } /* GetAudioOutState */
+    case 1: if (o) o->state = 0; return;                                  /* Start */
+    case 2: if (o) o->state = 1; return;                                  /* Stop */
+    case 3: case 7: {
         if (getenv("KIRBY_AUDOUT_APPEND_FAIL")) { rs->result = 1; fprintf(stderr, "[kirby-ipc] IAudioOut append cmd %u -> injected failure\n", rq->cmd); return; }
-        if (o) runtime_event_signal(o->event_w);
-        fprintf(stderr, "[kirby-ipc] IAudioOut append cmd %u -> released event\n", rq->cmd);
+        uint64_t client = 0;
+        if (rq->data_size >= 8) memcpy(&client, rq->data, 8);
+        if (rq->na) {
+            const uint8_t *b = ipc_guest(rq->a[0].addr, rq->a[0].size);
+            fprintf(stderr, "[kirby-ipc] IAudioOut cmd %u input %#llx/%#llx:", rq->cmd, (unsigned long long)rq->a[0].addr, (unsigned long long)rq->a[0].size);
+            for (unsigned k = 0; b && k < 0x30 && k < rq->a[0].size; k++) fprintf(stderr, " %02x", b[k]);
+            fprintf(stderr, " client=%#llx\n", (unsigned long long)client);
+        }
+        if (o && o->nclients < 16) o->clients[o->nclients++] = client;
+        if (o) { o->played += 1024; runtime_event_signal(o->event_w); }
         return;
+    }
     case 4: rs->move[rs->nmove++] = runtime_event_readable(o->event_w); return; /* RegisterBufferEvent */
-    case 5: case 8: { uint32_t v = 0; ipc_out(rs, &v, 4); return; }     /* GetReleasedAudioOutBuffers[Auto] */
+    case 5: case 8: {
+        uint32_t released = 0;
+        if (o && o->nclients && rq->nc && rq->c[0].size >= 8) {
+            uint64_t *dst = ipc_guest(rq->c[0].addr, rq->c[0].size);
+            if (dst) {
+                *dst = o->clients[0];
+                memmove(o->clients, o->clients + 1, (o->nclients - 1) * sizeof o->clients[0]);
+                o->nclients--; released = 1;
+            }
+        }
+        if (rq->nc) fprintf(stderr, "[kirby-ipc] IAudioOut released cmd %u out=%#llx/%#llx count=%u\n",
+                            rq->cmd, (unsigned long long)rq->c[0].addr, (unsigned long long)rq->c[0].size, released);
+        ipc_out(rs, &released, 4); return;
+    }
     case 6: { uint8_t v = 0; ipc_out(rs, &v, 1); return; }               /* ContainsAudioOutBuffer */
-    case 9: { uint32_t v = 0; ipc_out(rs, &v, 4); return; }              /* GetAudioOutBufferCount */
-    case 10: { uint64_t v = 0; ipc_out(rs, &v, 8); return; }             /* GetAudioOutPlayedSampleCount */
+    case 9: { uint32_t v = o ? o->nclients : 0; ipc_out(rs, &v, 4); return; } /* GetAudioOutBufferCount */
+    case 10: { uint64_t v = o ? o->played : 0; ipc_out(rs, &v, 8); return; } /* GetAudioOutPlayedSampleCount */
     case 11: { uint8_t v = 0; ipc_out(rs, &v, 1); return; }              /* FlushAudioOutBuffers */
     case 12: return;                                                      /* SetAudioOutVolume */
     case 13: { float v = 1.0f; ipc_out(rs, &v, 4); return; }             /* GetAudioOutVolume */

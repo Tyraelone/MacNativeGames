@@ -404,3 +404,22 @@ h=0x100c movie::Decoder::GetOutputFormat(...)
 - 注入 append 失败后不再 SIGBUS，但又回到原来的 `Movie.Scene.initAsync` Mint 断言。
 
 这确认 Movie.Scene 的异常与 **音频输出路径** 强相关，而不是单纯的视频帧或 `MovieOpening` 字符串。下一步应让 `AppendAudioOutBufferAuto` 正确回收/释放音频缓冲，避免 SDK 音频线程读坏指针。
+
+### 第十二轮：补上 audout 后 Movie.Scene 不再断言
+
+在 `audout:u` / `IAudioOut` 中记录 append 的 client pointer，并在 `GetReleasedAudioOutBuffersAuto` 中把 buffer 还回去后：
+
+- 不再出现 `guest Break`；
+- `movie::Decoder::GetOutputBuffer` / `ReleaseOutputBuffer` 第一次被调用；
+- Movie.Scene 可以持续运行 10 秒以上，没有原来的 Mint 断言。
+
+这说明之前的 Mint 异常确实是由 **audout 的零成功响应** 引起的，而不是 XBIN4 状态本身。
+
+但还有第二个问题：
+
+- 视频只释放了第 0 帧，之后没有新的 `AcquireOutputBufferIndex`；
+- 抓到的是纯黑帧；
+- 给视频 stub 加了一个 30 fps 的 `EV_OUTPUT` pump，也没有让播放器继续取帧；
+- 音频 buffer 在循环 append/release，`GetAudioOutPlayedSampleCount` 已开始递增。
+
+下一步是让视频线程继续取第 1..N 帧（或确认它在等音频/时钟的哪个条件），Movie.Scene 才可能自然结束并进标题。
