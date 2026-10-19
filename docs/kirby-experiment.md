@@ -365,3 +365,16 @@ MovieOpening / ExecChildSeq / Finished
 - 直接改字符串/长度已证明无效。
 
 下一步要么解析 XBIN4 的字节码/方法表，要么用一份已进标题的存档绕过 Movie.Scene。
+
+### 第十轮：把扫描范围扩到低地址模块区
+
+之前的内存扫描从 `0x300000000` 开始，漏掉了加载在低地址的 `main`/`sdk`/`subsdk0`。现在 `scan`/`scanptrat` 默认从 `0x100000000` 开始，并新增：
+
+```text
+scanword <hex> [start end]       搜索 4 字节值
+scanptrat <needle> <delta>       找到字符串后搜索指向 hit+delta 的 8 字节指针
+```
+
+实测 `scanptrat Seq.SequenceStoryMode 0` 在低地址找到字符串，但第一次命中的是输入命令缓冲区本身（`0x10478752a`），指针命中也是输入线程栈；需要先排除这类诊断缓冲区，或直接在 `main` 模块的 `0x394aa2` 地址附近做 `scanr`。
+
+这也说明 `main` 里确实有 `Seq.SequenceStoryMode` 的类型名字符串；下一步可以沿 RTTI/typeinfo 的 RELR 重定位找 vtable，再找活对象，而不是继续扫整个 guest。
