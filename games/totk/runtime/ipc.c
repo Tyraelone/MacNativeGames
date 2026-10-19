@@ -174,6 +174,52 @@ static void generic_service(IpcSession *s, const IpcRequest *rq, IpcResponse *rs
             s->name, rq->cmd, rq->type, rq->data_size);
     rs->data_size = 0;
 }
+
+/* audout:u / IAudioOut ----------------------------------------------------
+   The movie scene opens the legacy audio output service after the first
+   decoded frame. A zeroed generic reply makes the SDK's OpenAudioOut fail and
+   the Mint scene throws; provide the small protocol surface the SDK needs.
+   Audio is intentionally silence-only here. */
+typedef struct { uint32_t event_w; } AudoutOut;
+static void audout_out(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    AudoutOut *o = s->state;
+    switch (rq->cmd) {
+    case 0: { uint32_t v = 0; ipc_out(rs, &v, 4); return; }              /* GetAudioOutState: Stopped */
+    case 1: case 2: return;                                               /* Start / Stop */
+    case 3: case 7:
+        if (getenv("KIRBY_AUDOUT_APPEND_FAIL")) { rs->result = 1; fprintf(stderr, "[kirby-ipc] IAudioOut append cmd %u -> injected failure\n", rq->cmd); return; }
+        if (o) runtime_event_signal(o->event_w);
+        fprintf(stderr, "[kirby-ipc] IAudioOut append cmd %u -> released event\n", rq->cmd);
+        return;
+    case 4: rs->move[rs->nmove++] = runtime_event_readable(o->event_w); return; /* RegisterBufferEvent */
+    case 5: case 8: { uint32_t v = 0; ipc_out(rs, &v, 4); return; }     /* GetReleasedAudioOutBuffers[Auto] */
+    case 6: { uint8_t v = 0; ipc_out(rs, &v, 1); return; }               /* ContainsAudioOutBuffer */
+    case 9: { uint32_t v = 0; ipc_out(rs, &v, 4); return; }              /* GetAudioOutBufferCount */
+    case 10: { uint64_t v = 0; ipc_out(rs, &v, 8); return; }             /* GetAudioOutPlayedSampleCount */
+    case 11: { uint8_t v = 0; ipc_out(rs, &v, 1); return; }              /* FlushAudioOutBuffers */
+    case 12: return;                                                      /* SetAudioOutVolume */
+    case 13: { float v = 1.0f; ipc_out(rs, &v, 4); return; }             /* GetAudioOutVolume */
+    default: fprintf(stderr, "[kirby-ipc] IAudioOut command %u -> zero success\n", rq->cmd); return;
+    }
+}
+static void audout_manager(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    (void)s;
+    if (rq->cmd == 1) {                                                  /* OpenAudioOut */
+        AudoutOut *o = calloc(1, sizeof *o);
+        if (!o) runtime_fail("audout state allocation");
+        o->event_w = runtime_event_new();
+        if (getenv("KIRBY_AUDOUT_FAIL")) { free(o); rs->result = 1; fprintf(stderr, "[kirby-ipc] audout:u OpenAudioOut -> injected failure\n"); return; }
+        rs->move[rs->nmove++] = runtime_ipc_new_session("IAudioOut", audout_out, o, free);
+        uint32_t info[8] = {48000, 2, 2, 1, 0, 0, 0, 0};                 /* AudioOutParameterInternal */
+        ipc_out(rs, info, sizeof info);
+        if (rq->nc) fprintf(stderr, "[kirby-ipc] audout NameOut addr=%#llx size=%#llx (left untouched)\n",
+                            (unsigned long long)rq->c[0].addr, (unsigned long long)rq->c[0].size);
+        fprintf(stderr, "[kirby-ipc] audout:u OpenAudioOut -> IAudioOut handle\n");
+        return;
+    }
+    fprintf(stderr, "[kirby-ipc] audout:u command %u -> zero success\n", rq->cmd);
+    rs->data_size = 0;
+}
 #endif
 
 /* ---------- sm: service manager ---------- */
@@ -188,6 +234,11 @@ static void sm(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
         pthread_mutex_unlock(&registry);
         if (!found) {
 #if defined(KIRBY_GAME)
+            if (!strcmp(name, "audout:u")) {
+                rs->move[rs->nmove++] = runtime_ipc_new_session(name, audout_manager, NULL, NULL);
+                fprintf(stderr, "[kirby-ipc] opened audout:u service\n");
+                return;
+            }
             rs->move[rs->nmove++] = runtime_ipc_new_session(name, generic_service, NULL, NULL);
             fprintf(stderr, "[kirby-ipc] opened generic service %s\n", name);
             return;

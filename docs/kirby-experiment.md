@@ -378,3 +378,29 @@ scanptrat <needle> <delta>       找到字符串后搜索指向 hit+delta 的 8 
 实测 `scanptrat Seq.SequenceStoryMode 0` 在低地址找到字符串，但第一次命中的是输入命令缓冲区本身（`0x10478752a`），指针命中也是输入线程栈；需要先排除这类诊断缓冲区，或直接在 `main` 模块的 `0x394aa2` 地址附近做 `scanr`。
 
 这也说明 `main` 里确实有 `Seq.SequenceStoryMode` 的类型名字符串；下一步可以沿 RTTI/typeinfo 的 RELR 重定位找 vtable，再找活对象，而不是继续扫整个 guest。
+
+### 第十一轮：HLE trace 显示 Movie.Scene 在 audout:u 之后断言
+
+打开 `TOTK_HLE_TRACE=1` 后，Movie.Scene 失败前的最后调用是：
+
+```text
+h=0x100c movie::Decoder::GetOutputFormat(...)
+[kirby-ipc] opened generic service audout:u
+[kirby-ipc] audout:u command 1 (type 4, data 32) -> zero success
+[totk] guest Break
+```
+
+也就是说：视频第 0 帧之后，游戏去打开 **audout:u**，通用 IPC 回了零成功，随后 Mint 场景断言。
+
+已在 `ipc.c` 增加最小 `audout:u` / `IAudioOut` 服务：
+
+- `OpenAudioOut` 返回 `IAudioOut` 会话句柄和 `AudioOutParameterInternal`（48000/2ch/PcmInt16/Stopped）
+- `IAudioOut` 的 Append/RegisterBufferEvent/GetReleased/State/Volume 等命令返回成功
+- 可用 `KIRBY_AUDOUT_FAIL` / `KIRBY_AUDOUT_APPEND_FAIL` 注入失败做对照
+
+结果：
+
+- `OpenAudioOut` 通过，游戏开始调用 `IAudioOut` cmd 7（AppendAudioOutBufferAuto）4 次，随后在 sdk 的 guest `memcpy` 处 SIGBUS；
+- 注入 append 失败后不再 SIGBUS，但又回到原来的 `Movie.Scene.initAsync` Mint 断言。
+
+这确认 Movie.Scene 的异常与 **音频输出路径** 强相关，而不是单纯的视频帧或 `MovieOpening` 字符串。下一步应让 `AppendAudioOutBufferAuto` 正确回收/释放音频缓冲，避免 SDK 音频线程读坏指针。
