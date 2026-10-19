@@ -9069,21 +9069,24 @@ static void kirby_compose_scene(void) {
     if (g_kirby_scene_debug_frame == atomic_load(&g_cur_frame)) return;
     id<MTLTexture> a = g_kirby_albedo_debug, sky = g_kirby_sky_debug;
     if (!a || !sky || a.width != sky.width || a.height != sky.height) return;
-    static id<MTLRenderPipelineState> ps;
+    static id<MTLRenderPipelineState> ps[2];
     static id<MTLSamplerState> samp;
-    if (!ps) {
+    if (!ps[0]) {
         static NSString *msl = @"#include <metal_stdlib>\nusing namespace metal;\n"
             "struct V { float4 p [[position]]; float2 uv; };\n"
             "vertex V vs(uint id [[vertex_id]]) { float2 uv=float2((id<<1)&2,id&2); V o; o.p=float4(uv*float2(2,-2)+float2(-1,1),0,1); o.uv=uv; return o; }\n"
-            "fragment float4 fs(V in [[stage_in]], texture2d<float> a [[texture(0)]], texture2d<float> sky [[texture(1)]], sampler s [[sampler(0)]]) { float4 c=a.sample(s,in.uv); return dot(abs(c.rgb),float3(1))>0.001 ? c : sky.sample(s,in.uv)*0.35; }\n";
+            "fragment float4 fs(V in [[stage_in]], texture2d<float> a [[texture(0)]], texture2d<float> sky [[texture(1)]], sampler s [[sampler(0)]]) { float4 c=a.sample(s,in.uv); return dot(abs(c.rgb),float3(1))>0.001 ? c : sky.sample(s,in.uv)*0.35; }\n"
+            "fragment float4 fsf(V in [[stage_in]], texture2d<float> a [[texture(0)]], texture2d<float> sky [[texture(1)]], sampler s [[sampler(0)]]) { float2 uv=float2(in.uv.x,1.0-in.uv.y); float4 c=a.sample(s,uv); return dot(abs(c.rgb),float3(1))>0.001 ? c : sky.sample(s,uv)*0.35; }\n";
         NSError *err = nil;
         id<MTLLibrary> lib = [g_dev newLibraryWithSource:msl options:nil error:&err];
-        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
-        pd.vertexFunction = [lib newFunctionWithName:@"vs"];
-        pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
-        pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
-        ps = lib ? [g_dev newRenderPipelineStateWithDescriptor:pd error:&err] : nil;
-        if (!ps) { MLOG("【红】Kirby 场景合成管线失败：%s", err.localizedDescription.UTF8String); return; }
+        for (int k = 0; k < 2; k++) {
+            MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+            pd.vertexFunction = [lib newFunctionWithName:@"vs"];
+            pd.fragmentFunction = [lib newFunctionWithName:k ? @"fsf" : @"fs"];
+            pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+            ps[k] = lib ? [g_dev newRenderPipelineStateWithDescriptor:pd error:&err] : nil;
+        }
+        if (!ps[0] || !ps[1]) { MLOG("【红】Kirby 场景合成管线失败：%s", err.localizedDescription.UTF8String); return; }
         MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
         sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterNearest;
         sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
@@ -9111,7 +9114,7 @@ static void kirby_compose_scene(void) {
     [at setTexture:sky.gpuResourceID atIndex:1];
     [at setSamplerState:samp.gpuResourceID atIndex:0];
     [en setArgumentTable:at atStages:MTLRenderStageFragment];
-    [en setRenderPipelineState:ps];
+    [en setRenderPipelineState:ps[atomic_load(&g_kirby_scene_kind) == 1 ? 1 : 0]];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     m4_end(en);
     g_kirby_scene_debug = out;
@@ -9992,7 +9995,7 @@ static void copy_t2t(const p_copy_t2t *c) {
         for (int z = 0; z < nz && ok; z++) ok = copy_t2t_astc(s, d, sl, sz0 + c->sr.zoffset + z, dl, dz0 + c->dr.zoffset + z, c->sr.xoffset, c->sr.yoffset, c->dr.xoffset, c->dr.yoffset, c->sr.width, c->sr.height);
         if (ok) return;
     }
-    if ((c->sr.width != c->dr.width || c->sr.height != c->dr.height) &&
+    if ((c->sr.width != c->dr.width || c->sr.height != c->dr.height || getenv("KIRBY_COPY_FLIP_ALL")) &&
         !(c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT) &&
         s.pixelFormat == d.pixelFormat && !s3 && !d3 && nz == 1 && (c->dr.depth ? c->dr.depth : 1) == 1 &&
         copy_t2t_scaled(c, s, d, sl, sz0, dl, dz0)) return;
@@ -11929,8 +11932,8 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
        heuristic flipped menus and left them upside down; keep the present
        unflipped unless a diagnostic explicitly asks for it. */
     int kind = atomic_load(&g_kirby_scene_kind);
-    atomic_store(&g_kirby_flip, getenv("KIRBY_FORCE_FLIP") ? 1 : kind == 1);
-    atomic_store(&g_kirby_3d, kind == 2);
+    atomic_store(&g_kirby_flip, getenv("KIRBY_FORCE_FLIP") ? 1 : 0);
+    atomic_store(&g_kirby_3d, kind == 1 || kind == 2);
 #endif
     int discard = atomic_load(&g_present_discard), islot = mfx_enabled() && t ? mfx_present_frame(t, period, discard) : -1;
     if (mfx_latch() && !mfx_enabled()) g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0;   // key 2 / flag mfx_interp: the next frame is fully on or off

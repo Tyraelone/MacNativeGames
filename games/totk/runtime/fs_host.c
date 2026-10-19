@@ -203,9 +203,8 @@ static unsigned open_file(uint64_t *out, const char *path, int mode) {
         extern void dm_gfx_set_kirby_scene(int);
         static int kind;
         if (strstr(path, "Mint/TitleMenu.Scene") || strstr(path, "Mint/TitleMenu.") || strstr(path, "Mint/Story")) kind = 0;
-        else if (strstr(path, "Mint/WMap.Scene")) kind = 1;
+        else if (strstr(path, "Mint/WMap.Scene") || strstr(path, "map3d/LvMap")) kind = 1;
         else if (strstr(path, "map/Step/") || strstr(path, "Mint/Stage")) kind = 2;
-        else if (strstr(path, "map3d/LvMap") && kind != 2) kind = 1;
         dm_gfx_set_kirby_scene(kind);
     }
 #endif
