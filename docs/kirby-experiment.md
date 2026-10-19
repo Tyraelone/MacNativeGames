@@ -470,3 +470,11 @@ key 40 500
 - 存档 `savedata.dat` 仍是 4 MB 全零，游戏能读能建但 TitleMenuData 为空。
 
 因此当前不是“输入没送到”，而是标题菜单的 **TitleMenuData/菜单项为空**，按钮本身没有可执行动作。下一步要么初始化一份有效的 Kirby 存档，要么找到 TitleMenu 的序列/菜单数据入口。
+
+### 第十六轮：强制存档文件“不存在”也不触发初始化
+
+新增 `KIRBY_SAVE_MISSING=1` 诊断：让 `open_file("save:/savedata.dat")` 的读打开返回 `R_PATH_NOT_FOUND`，观察游戏是否会走“首次存档初始化”。
+
+结果：游戏仍创建 4 MB 全零 `savedata.dat`，TitleMenu 仍是 `NOTHING TO DO`；没有写入任何存档内容。说明问题不是“文件存在导致游戏跳过初始化”，而是更上层的 `CheckSaveData`/`TitleMenuData` 状态/格式没有被游戏接受。
+
+这个开关只在环境变量下生效，不影响正常路径。

@@ -194,6 +194,7 @@ void runtime_fs_log(const char *what, const char *path);
 static unsigned open_file(uint64_t *out, const char *path, int mode) {
     if (path && !runtime_romfs_owns(path)) runtime_fs_log(mode & 2 ? "write" : "read", path);
     if (runtime_romfs_owns(path)) return runtime_romfs_open(out, path, mode);
+    if (getenv("KIRBY_SAVE_MISSING") && path && !strcmp(path, "save:/savedata.dat") && (mode & OPEN_READ)) return R_PATH_NOT_FOUND;
     if (!out || !(mode & (OPEN_READ | OPEN_WRITE)) || (mode & ~7)) return R_INVALID_ARGUMENT;
     char p[1100]; int kind = M_FREE; unsigned r = host_path_kind(path, p, sizeof p, &kind); if (r) return r;
     struct stat st; if (stat(p, &st)) return R_PATH_NOT_FOUND; if (!S_ISREG(st.st_mode)) return R_PATH_NOT_FOUND;
