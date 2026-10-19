@@ -423,3 +423,16 @@ h=0x100c movie::Decoder::GetOutputFormat(...)
 - 音频 buffer 在循环 append/release，`GetAudioOutPlayedSampleCount` 已开始递增。
 
 下一步是让视频线程继续取第 1..N 帧（或确认它在等音频/时钟的哪个条件），Movie.Scene 才可能自然结束并进标题。
+
+### 第十三轮：视频帧终于推进，但画面仍黑
+
+在 `movie_host_tick`（每个 present、游戏线程）里给 stub video 每 33ms 发一次 `EV_OUTPUT`，不再用独立 host 线程（那会 SIGSEGV）。结果：
+
+- `stub release_output` 从 frame 0 一路推进到 200+；
+- `stub get_output` 每帧都把 NV12 拷进 guest buffer；
+- 没有 `guest Break`，Movie.Scene 持续运行；
+- 但截图仍是纯黑。
+
+检查 `ImageMovie.nv12` 本身：frame 0/120 的 Y 是 16（黑），frame 421 的 Y 约 143（有内容），frame 600/1200 更亮。说明解码数据和拷贝都在，问题在**显示/合成**：很可能 Movie.Scene 用的是独立的 VI layer，当前 frontend 只把主 NVN window 合成到 Metal，第二层没有上屏。
+
+下一步应检查 `nn::vi::CreateLayer`/`SetLayerScalingMode` 的第二次调用及 movie layer 的 buffer，确认视频是画进 NVN framebuffer 还是单独 VI 层。

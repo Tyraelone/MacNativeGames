@@ -69,7 +69,7 @@ typedef struct {
     Ready decoded[OUT_BUFS]; int ndecoded;   /* paced: decoded, not due yet */
     uint64_t t0; int64_t pts0;               /* paced: host time and presentation time of the first frame handed over */
     uint64_t frames, decode_ns, errors, dropped;
-    int pump; pthread_t pump_thread;
+    int pump; pthread_t pump_thread; uint64_t last_pump;
     pthread_mutex_t mu;
 } Movie;
 
@@ -182,6 +182,15 @@ static void release_due(Movie *m, Signals *s, uint64_t now) {
     m->ready[m->nready++] = d; note(m, s, EV_OUTPUT);
 }
 void movie_host_tick(void) {   /* lock order g_lock -> Movie.mu, as in destroy; events fire after both are released */
+    /* Experimental Kirby stub: the movie player stops asking for video input after the extractor reports EOS.
+       Nudge its output event from the game's present thread so the render path can hand over the next frame. */
+    for (int i = 0; i < MAX_MOVIES; i++) {
+        Movie *m = g_movies[i]; if (!m || !m->stub || m->stub_audio || !m->started) continue;
+        uint64_t now = now_ns();
+        if (now - m->last_pump < 33333333ULL) continue;
+        m->last_pump = now;
+        Signals s = {0}; pthread_mutex_lock(&m->mu); note(m, &s, EV_OUTPUT); pthread_mutex_unlock(&m->mu); fire(&s);
+    }
     Signals s = {0};
     pthread_mutex_lock(&g_lock);
     for (int i = 0; i < MAX_MOVIES; i++) {
@@ -373,7 +382,8 @@ static int h_get_output_format(void *obj, void *md) {
 }
 typedef int (*int_fn)(void *);
 static void *stub_pump(void *p) {
-    Movie *m = p;
+    Movie *m = p; unsigned n = 0;
+    LOG("stub pump started events=%p", (void *)m->events);
     while (m->pump) {
         usleep(33333);
         Signals s = {0};
@@ -381,7 +391,9 @@ static void *stub_pump(void *p) {
         if (m->started && !m->stub_audio) note(m, &s, EV_OUTPUT);
         pthread_mutex_unlock(&m->mu);
         fire(&s);
+        if ((++n % 30) == 0) LOG("stub pump tick %u frame=%d", n, m->movie_frame_index);
     }
+    LOG("stub pump stopped");
     return NULL;
 }
 static int h_start(void *obj) {
