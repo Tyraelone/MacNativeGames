@@ -266,6 +266,10 @@ static void *input_file(void *arg) {
 #if defined(KIRBY_GAME)
         } else if (!strncmp(line, "scan ", 5)) {
             line[strcspn(line, "\r\n")] = 0; extern void runtime_kirby_memscan(const char *); runtime_kirby_memscan(line + 5);
+        } else if (!strncmp(line, "scanr ", 6)) {
+            char *e1; uint64_t s0 = strtoull(line + 6, &e1, 0), e0 = strtoull(e1, &e1, 0); while (*e1 == ' ') e1++;
+            extern void runtime_kirby_memscan_range(const char *, uint64_t, uint64_t);
+            if (*e1) runtime_kirby_memscan_range(e1, s0, e0);
         } else if (!strncmp(line, "scanptr ", 8)) {
             char *e1; uint64_t v = strtoull(line + 8, &e1, 0), s0 = 0x300000000ULL, e0 = 0x8000000000ULL;
             if (e1 && *e1) s0 = strtoull(e1, &e1, 0); if (e1 && *e1) e0 = strtoull(e1, NULL, 0);

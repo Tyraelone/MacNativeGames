@@ -280,12 +280,12 @@ void *runtime_override(const char *name) {
 }
 #if defined(KIRBY_GAME)
 #include <string.h>
-void runtime_kirby_memscan(const char *needle) {
+void runtime_kirby_memscan_range(const char *needle, uint64_t start, uint64_t end) {
     size_t n = strlen(needle);
     if (n < 4) { fprintf(stderr, "[kirby-scan] needle too short\n"); return; }
-    mach_vm_address_t a = 0x300000000ULL;
+    mach_vm_address_t a = start;
     unsigned hits = 0;
-    while (a < 0x8000000000ULL) {
+    while (a < end) {
         mach_vm_size_t size = 0; vm_region_basic_info_data_64_t info; mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj = 0;
         mach_vm_address_t at = a;
         if (mach_vm_region(mach_task_self(), &at, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count, &obj) != KERN_SUCCESS) break;
@@ -313,6 +313,7 @@ void runtime_kirby_memscan(const char *needle) {
     }
     fprintf(stderr, "[kirby-scan] %u hits\n", hits);
 }
+void runtime_kirby_memscan(const char *needle) { runtime_kirby_memscan_range(needle, 0x300000000ULL, 0x8000000000ULL); }
 #endif
 #if defined(KIRBY_GAME)
 void runtime_kirby_memdump(uint64_t addr, size_t len) {
