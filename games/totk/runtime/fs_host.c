@@ -195,6 +195,20 @@ static unsigned open_file(uint64_t *out, const char *path, int mode) {
     if (path && !runtime_romfs_owns(path)) runtime_fs_log(mode & 2 ? "write" : "read", path);
     if (runtime_romfs_owns(path)) return runtime_romfs_open(out, path, mode);
     if (getenv("KIRBY_SAVE_MISSING") && path && !strcmp(path, "save:/savedata.dat") && (mode & OPEN_READ)) return R_PATH_NOT_FOUND;
+#if defined(KIRBY_GAME)
+    /* Kirby's world map renders upside down, the stage/menus upright.  Pick the
+       present flip and whether to use the simplified scene composite from the
+       scene resources the game opens. */
+    if (path) {
+        extern void dm_gfx_set_kirby_scene(int);
+        static int kind;
+        if (strstr(path, "Mint/TitleMenu.Scene") || strstr(path, "Mint/TitleMenu.") || strstr(path, "Mint/Story")) kind = 0;
+        else if (strstr(path, "Mint/WMap.Scene")) kind = 1;
+        else if (strstr(path, "map/Step/") || strstr(path, "Mint/Stage")) kind = 2;
+        else if (strstr(path, "map3d/LvMap") && kind != 2) kind = 1;
+        dm_gfx_set_kirby_scene(kind);
+    }
+#endif
     if (!out || !(mode & (OPEN_READ | OPEN_WRITE)) || (mode & ~7)) return R_INVALID_ARGUMENT;
     char p[1100]; int kind = M_FREE; unsigned r = host_path_kind(path, p, sizeof p, &kind); if (r) return r;
     struct stat st; if (stat(p, &st)) return R_PATH_NOT_FOUND; if (!S_ISREG(st.st_mode)) return R_PATH_NOT_FOUND;

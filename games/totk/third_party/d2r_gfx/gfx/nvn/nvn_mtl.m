@@ -3524,6 +3524,7 @@ static int g_pso_dirty = 1, g_dss_dirty = 1;   // 回放中改了管线 / 深度
 static uint64_t g_stat_args_enc, g_stat_args_reuse;   // 参数缓冲：新编 / 复用次数 | Argument buffer: new-encode / reuse counts
 #ifdef KIRBY_GAME
 static _Atomic int g_kirby_3d;
+static _Atomic int g_kirby_scene_kind;
 static id<MTLTexture> g_kirby_albedo_debug;
 static id<MTLTexture> g_kirby_sky_debug, g_kirby_scene_debug;
 static uint64_t g_kirby_albedo_debug_frame, g_kirby_scene_debug_frame;
@@ -4445,6 +4446,7 @@ static void shmap_load(void) {
     NSString *src, *src_path; NSDictionary<NSNumber *, NSString *> *io; NSMutableDictionary<NSString *, id<MTLFunction>> *vpatch; id<MTLFunction> mfx_fn[8]; uint8_t mfx_tried[8]; } @end   // TOTK: MSL source, user varyings (locn -> type), patched vertex functions   // bflib：可读 tile 版本 <键>_bf（合并 B 第 2 步） | bflib: readable-tile version <key>_bf (merge B step 2)
 @implementation NvShader @end
 #ifdef KIRBY_GAME
+void dm_gfx_set_kirby_scene(int kind) { atomic_store(&g_kirby_scene_kind, kind); }
 static NSString *kirby_scene_vertex_source(NSString *src, NSString *key) {
     if (!src || !getenv("KIRBY_SCENE_PRESENT") || ![key hasPrefix:@"06c3dcf1ff3c65d2"]) return src;
     // The game's final scene quad uses GL-style bottom-left UVs; Metal samples
@@ -11921,9 +11923,9 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     /* The game's swapchain image is already upright. The earlier pass-count
        heuristic flipped menus and left them upside down; keep the present
        unflipped unless a diagnostic explicitly asks for it. */
-    atomic_store(&g_kirby_flip, getenv("KIRBY_FORCE_FLIP") ? 1 : 0);
-    { static uint64_t last_pass; uint64_t passes = g_stat_pass - last_pass; last_pass = g_stat_pass;
-      atomic_store(&g_kirby_3d, passes >= 20); }
+    int kind = atomic_load(&g_kirby_scene_kind);
+    atomic_store(&g_kirby_flip, getenv("KIRBY_FORCE_FLIP") ? 1 : kind == 1);
+    atomic_store(&g_kirby_3d, kind == 2);
 #endif
     int discard = atomic_load(&g_present_discard), islot = mfx_enabled() && t ? mfx_present_frame(t, period, discard) : -1;
     if (mfx_latch() && !mfx_enabled()) g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0;   // key 2 / flag mfx_interp: the next frame is fully on or off
