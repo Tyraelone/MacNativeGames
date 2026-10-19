@@ -187,3 +187,23 @@ TOTK_PROFILE_DIR="$PWD/profile" \
 - `TOTK_TRAP_PROBE` 不是正式开关，只用于诊断。
 
 **下一处最小工作**：让 Movie.Scene 的 Mint 脚本不再异常。方向有两个：实现旧 SDK 的 MP4 Extractor/MediaData（让 `send_input` 真正拿到 H.264 样本），或者从 `mint/Seq.bin`/存档层跳过 `MovieOpening`。在此之前，程序能持续出帧，但不会进入标题菜单。
+
+### 第一次真正出画：必须显式允许 GPU 提交
+
+黑屏的一个关键原因不是解码器，而是宿主的保护开关：
+
+```text
+[dm] [nvn-mtl] 【红】GPU submission disabled: work is encoded but never submitted
+(no picture, no GPU results); TOTK_GPU_ALLOW_SUBMIT=1 re-enables it
+```
+
+设置 `TOTK_GPU_ALLOW_SUBMIT=1` 后，GPU 开始执行命令，帧率约 60 fps，GPU 时间约 0.16 ms；用运行时截图命令在 `F310` 抓到了第一张有内容的画面（黑色背景、右下角粉色 Kirby 标志）。这说明 NVN→Metal 的绘制/提交链路已经真正工作，不再只是“录制命令”。
+
+实验 App 的启动器已经加入：
+
+```sh
+export TOTK_GPU_ALLOW_SUBMIT=1
+export KIRBY_MOVIE_FILE="$HERE/Resources/movie-head.nv12"   # 影片前 3 帧，约 8.9 MB
+```
+
+因此双击 App 至少能看到这张开场影片画面，而不是纯黑。`Movie.Scene` 仍会在第一帧后触发 Mint 异常，标题画面尚未到达。
