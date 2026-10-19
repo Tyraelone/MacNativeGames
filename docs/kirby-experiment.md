@@ -257,3 +257,11 @@ x2[2]  0x...f7d7  sdk+0x7977d7
 这进一步说明：
 - 继续补 `movie::Decoder` 的 NV12/音频字段不会推进；
 - 需要从 Mint 脚本/序列层跳过 `MovieOpening`，或让 Mint VM 把该异常视为可恢复。
+
+### 第五轮：原始 decoder / 重封装 / 按住跳过 都不改变 Movie.Scene
+
+- `TOTK_MOVIE_HOST=0` 走 SDK 原始 NvMM decoder：仍停在 Movie.Scene，45 秒后没有标题。
+- 把原片重新 remux（去 edit list、mp42、faststart）：Extractor 仍 `size=0 EOS`。
+- 从启动就按住 `+`/`A`（`down 36` / `down 38`）：仍进 Movie.Scene。
+- 把 `sdk+0x452c4`（diag translate）入口改成 `ret`：仍断言，场景不变。
+- 这一步说明：Movie.Scene 的 Mint 异常不依赖具体 decoder、容器或按键时序；必须在 Mint 序列/异常处理层处理。

@@ -96,6 +96,10 @@ void runtime_kirby_sdk_patches(Module *m) {
         int64_t delta = (int64_t)m->patch_off - (int64_t)off;
         ((uint32_t *)(void *)(m->base + off))[0] = 0x14000000u | ((uint32_t)((delta >> 2) & 0x3ffffffu));
     }
+    if (getenv("KIRBY_PATCH_DIAG")) {
+        uint32_t *diag = (uint32_t *)(void *)(m->base + 0x452c4);
+        if (diag[0] != 0xD65F03C0u) { diag[0] = 0xD65F03C0u; fprintf(stderr, "[kirby] patched sdk diag translate to return\n"); }
+    }
     fprintf(stderr, "[kirby] sdk AbortImpl hooks installed at 0x444a8..0x444b0 -> patch+%#llx host=%p\n",
             (unsigned long long)m->patch_off, (void *)kirby_abort_probe);
     /* The generic abort trap ends in an infinite branch. In this experimental
