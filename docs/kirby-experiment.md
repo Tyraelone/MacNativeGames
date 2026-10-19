@@ -458,3 +458,15 @@ key 40 500
 ```
 
 在 `KIRBY_MOVIE_NO_PUMP=1` 和 3 帧 `movie-head.nv12` 下，这个脚本也能稳定进入 TitleMenu；`KIRBY_MOVIE_NO_PUMP=1` 是必要的，否则 30fps tick pump 会在小影片上把 guest 音频/视频线程打崩。
+
+### 第十五轮：标题能自动出现，但菜单不响应
+
+把音频 decoder 的 EOS 也传下去（`audio_eos`）后，3 帧 `movie-head.nv12` 在约 8 秒就会自然进入 TitleMenu，不再需要按键跳过。
+
+但 TitleMenu 上只有一个 `NOTHING TO DO` 按钮（带 A 图标），实测：
+
+- `KIRBY_INPUT_BITS=1` 能看到游戏每帧读到 `full id=0 buttons=0x1`（A 已按下）；
+- 发送 A / + / D-pad 组合，场景都不变化；
+- 存档 `savedata.dat` 仍是 4 MB 全零，游戏能读能建但 TitleMenuData 为空。
+
+因此当前不是“输入没送到”，而是标题菜单的 **TitleMenuData/菜单项为空**，按钮本身没有可执行动作。下一步要么初始化一份有效的 Kirby 存档，要么找到 TitleMenu 的序列/菜单数据入口。

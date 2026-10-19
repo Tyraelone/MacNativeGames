@@ -71,7 +71,8 @@ static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_st
  if(pad.buttons&~padSeen||abs(pad.lx)>16384||abs(pad.ly)>16384||abs(pad.rx)>16384||abs(pad.ry)>16384)user_input("controller");padSeen=pad.buttons;
  if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;
  if(abs(pad.rx)>abs(state.rx))state.rx=pad.rx;if(abs(pad.ry)>abs(state.ry))state.ry=pad.ry;
- }*out=state;pthread_mutex_unlock(&inputLock);return 1;}
+ }if(getenv("KIRBY_INPUT_BITS")&&state.buttons)fprintf(stderr,"[kirby-input] full id=%#x style=%u buttons=%#llx\n",id?*id:0,want_style,(unsigned long long)state.buttons);
+ *out=state;pthread_mutex_unlock(&inputLock);return 1;}
 #if defined(KIRBY_GAME)
 /* Kirby's movie/scene code polls several Npad state kinds. Report the same
    keyboard/gamepad state for all of them so a skip press is visible even when
@@ -83,6 +84,7 @@ static int any_pad_states(NpadState *out,int max,const uint32_t *id){
  state.lx=32767*((int)keys[2]-(int)keys[0]);state.ly=32767*((int)keys[13]-(int)keys[1]);
  RuntimeGamepadState pad;runtime_gamepad_read(&pad);state.buttons|=pad.buttons;
  if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;
+ if(getenv("KIRBY_INPUT_BITS")&&state.buttons)fprintf(stderr,"[kirby-input] any id=%#x style=%u buttons=%#llx\n",id?*id:0,0,(unsigned long long)state.buttons);
  *out=state;pthread_mutex_unlock(&inputLock);return 1;
 }
 #endif
