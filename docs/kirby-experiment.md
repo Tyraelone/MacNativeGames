@@ -275,3 +275,27 @@ x2[2]  0x...f7d7  sdk+0x7977d7
 ```
 
 结果仍进入 Movie.Scene 并断言。输入不是 Movie.Scene 的阻塞点；影片/Mint 场景的失败发生在轮询按键之前。
+
+### 用 Ryujinx 存档跳过 Movie.Scene
+
+用户选择先用通用模拟器生成一份“已看过开场、能进标题”的存档。仓库新增
+`games/kirby/tools/import_ryujinx_save.py`：它从 Ryujinx 的
+`bis/user/save/.../01007E3006DDA000` 找到存档，备份原生 profile 的现有存档，
+再把文件复制到当前唯一的 save slot。
+
+Ryujinx 的 macOS 存档通常在：
+
+```text
+~/Library/Application Support/Ryujinx/bis/user/save/0000000000000000/01007E3006DDA000
+```
+
+导入命令：
+
+```sh
+python3 games/kirby/tools/import_ryujinx_save.py \
+  --ryujinx-save "$HOME/Library/Application Support/Ryujinx/bis/user/save" \
+  --profile /Users/duanziyu/Documents/deepseek-harness/kirby-work/profile
+```
+
+当前环境无法稳定连接到 Ryujinx 的更新服务器，下载/安装需要用户在本机完成；
+拿到存档后就可以直接验证跳过 Movie.Scene 后的标题、菜单和第一关。
