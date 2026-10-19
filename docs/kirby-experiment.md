@@ -337,3 +337,31 @@ base = 0x3dc520000
 新增 `pokeat <needle> <delta> <hex>`：找到字符串后可直接改 guest 内存。实测把 `MovieOpening` 的长度前缀改成 8、内容改成 `Finished`（一次写 16 字节）后，**场景仍停在 Movie.Scene**。这说明 Mint VM 用的是模块内的函数/状态索引，而不是运行时按这个字符串重新查函数。
 
 下一步应解析模块头 0x30 起的类/函数描述表，找到状态函数索引，而不是继续改字符串。
+
+### 第九轮：找到 SequenceStoryMode 的类描述，但没找到状态代码入口
+
+在 `Seq.bin` 文件偏移 0x3b70 找到 `Seq.SequenceStoryMode` 的类描述区，包含：
+
+```text
+Seq.SequenceStoryMode
+mPhase            // 类型 Seq.SequenceStoryMode.Phase
+mIsWatchMovie     // bool
+void this()
+nextAction()
+createChildSequence()
+onChildSequenceEnd(...)
+createScene()
+onSceneEnd(...)
+onEnd()
+MovieOpening / ExecChildSeq / Finished
+```
+
+0x750 起的表又引用了 0x350、0x560 等偏移，但这些偏移落在**属性/方法名字符串区**，不是 AArch64 代码，也不是可直接改的函数指针。`MovieOpening` 等状态更可能是 Mint 字节码里的入口，而不是一个 C++ 虚表槽。
+
+因此：
+
+- 已确认模块基址、类描述、状态名和 `mPhase`/`mIsWatchMovie` 字段；
+- 但还没有把 `MovieOpening` 映射到具体字节码地址；
+- 直接改字符串/长度已证明无效。
+
+下一步要么解析 XBIN4 的字节码/方法表，要么用一份已进标题的存档绕过 Movie.Scene。
