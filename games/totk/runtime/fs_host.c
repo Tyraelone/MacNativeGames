@@ -303,6 +303,21 @@ static void close_directory(uint64_t h) {
 }
 /* The fs priority only orders I/O inside the system fs process; host I/O is unordered. */
 static void set_priority(int priority) { (void)priority; }
+/* SDK 4.4 entry points used by Kirby; the TOTK build reaches the same state through
+   Init/Mount and its own commit path. */
+static unsigned ensure_save(const void *uid) { (void)uid; ready(); return 0; }
+static unsigned commit_save(const char *mount) { return commit(mount); }
+static void set_allocator(void *alloc, void *free_fn) { (void)alloc; (void)free_fn; }
+static unsigned delete_directory(const char *path) {
+    char p[1100]; unsigned r = save_change_path(path, p, sizeof p); if (r) return r;
+    struct stat st; if (stat(p, &st) || !S_ISDIR(st.st_mode)) return R_PATH_NOT_FOUND;
+    return rmdir(p) ? R_NOT_EMPTY : 0;
+}
+static unsigned rename_directory(const char *from, const char *to) {
+    char a[1100], b[1100]; unsigned r = save_change_path(from, a, sizeof a); if (!r) r = host_path(to, b, sizeof b); if (r) return r;
+    struct stat st; if (!stat(b, &st)) return R_ALREADY_EXISTS;
+    return rename(a, b) ? errno_result() : 0;
+}
 
 /* make probe-save: the "save in progress" state the window close waits on, through the fs entry points the game uses
    (a fresh profile in build/probe-save-profile; no game). */
@@ -359,6 +374,11 @@ void *runtime_fs_host_override(const char *name) {
         {"_ZN2nn2fs20ReadCacheStorageListEPiPNS0_16CacheStorageInfoENS0_22CacheStorageListHandleEi", read_cache_list},
         {"_ZN2nn2fs21CloseCacheStorageListENS0_22CacheStorageListHandleE", close_cache_list},
         {"_ZN2nn2fs26SetPriorityOnCurrentThreadENS0_8PriorityE", set_priority},
+        {"_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE", ensure_save},
+        {"_ZN2nn2fs14CommitSaveDataEPKc", commit_save},
+        {"_ZN2nn2fs12SetAllocatorEPFPvmEPFvS1_mE", set_allocator},
+        {"_ZN2nn2fs15DeleteDirectoryEPKc", delete_directory},
+        {"_ZN2nn2fs15RenameDirectoryEPKcS2_", rename_directory},
     };
     for (size_t i = 0; i < sizeof map / sizeof *map; i++) if (!strcmp(name, map[i].name)) return map[i].fn;
     return NULL;

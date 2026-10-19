@@ -299,10 +299,20 @@ static uint32_t vi_vsync(void *ev,void *display){
  if(!ev||display!=&displayIdentity)return 0xf601;hle_bind_system_event(ev,1);
  pthread_mutex_lock(&vsyncLock);if(vsyncCount>=16)runtime_fail("VI display event limit");vsyncEvents[vsyncCount++]=ev;pthread_mutex_unlock(&vsyncLock);return 0;
 }
+/* The host layer is a token, not an SDK object; these entry points only need to
+   accept it and return success. */
+static uint32_t vi_scaling(void *layer,int mode){(void)layer;(void)mode;return 0;}
+static uint32_t vi_close(void *display){(void)display;return 0;}
+static uint32_t vi_destroy(void *layer){(void)layer;return 0;}
+static void vi_finalize(void){}
 void *runtime_front_override(const char *name){
  static const struct{const char *name;void *fn;} entries[]={
  {"_ZN2nn2vi10InitializeEv",vi_initialize},{"_ZN2nn2vi18OpenDefaultDisplayEPPNS0_7DisplayE",vi_open},
  {"_ZN2nn2vi11CreateLayerEPPNS0_5LayerEPNS0_7DisplayE",vi_layer},{"_ZN2nn2vi15GetNativeWindowEPPvPNS0_5LayerE",vi_window},
- {"_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE",vi_vsync}};
+ {"_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE",vi_vsync},
+ {"_ZN2nn2vi19SetLayerScalingModeEPNS0_5LayerENS0_11ScalingModeE",vi_scaling},
+ {"_ZN2nn2vi12CloseDisplayEPNS0_7DisplayE",vi_close},
+ {"_ZN2nn2vi12DestroyLayerEPNS0_5LayerE",vi_destroy},
+ {"_ZN2nn2vi8FinalizeEv",vi_finalize}};
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
 }

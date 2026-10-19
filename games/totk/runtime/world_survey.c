@@ -14,6 +14,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(KIRBY_GAME)
+/* The live survey addresses are TOTK object layouts; Kirby runs with the survey disabled. */
+_Atomic int runtime_survey_pending;
+void runtime_survey_init(Module *m) { (void)m; }
+int runtime_survey_command(const char *line) { (void)line; return 0; }
+void runtime_survey_tick(uint64_t frame) { (void)frame; }
+void runtime_survey_cancel_user(void) { }
+#else
+
 #if defined(TOTK_GAME_V143)
 _Atomic int runtime_survey_pending;
 void runtime_survey_init(Module *m) {
@@ -176,4 +185,5 @@ void runtime_survey_tick(uint64_t frame) {
     pthread_mutex_unlock(&survey_lock);
     in_tick = 0;
 }
+#endif
 #endif

@@ -283,6 +283,15 @@ def ADDR(dd, n, m): return 0x8B000000 | (m << 16) | (n << 5) | dd
 def SUBI(dd, n, imm12, sh=0): return 0xD1000000 | (sh << 22) | (imm12 << 10) | (n << 5) | dd
 def BR(n): return 0xD61F0000 | (n << 5)
 def BLR(n): return 0xD63F0000 | (n << 5)
+def MOVZ(d, imm, shift=0): return 0xD2800000 | ((shift // 16) << 21) | ((imm & 0xffff) << 5) | d
+def MOVK(d, imm, shift=0): return 0xF2800000 | ((shift // 16) << 21) | ((imm & 0xffff) << 5) | d
+def SUB(d, n, m): return 0xCB000000 | (m << 16) | (n << 5) | d
+def CBZ(d, frm, to):
+    off = (to - frm) >> 2; assert -(1 << 18) <= off < (1 << 18), f'CBZ out of range {frm:x}->{to:x}'
+    return 0xB4000000 | ((off & 0x7FFFF) << 5) | d
+def BEQ(frm, to):
+    off = (to - frm) >> 2; assert -(1 << 18) <= off < (1 << 18), f'BEQ out of range {frm:x}->{to:x}'
+    return 0x54000000 | ((off & 0x7FFFF) << 5)
 NOP = 0xD503201F
 
 def dis(w, addr):
@@ -388,6 +397,31 @@ def site_br(ins, base, count):
     for i in range(count):
         emit(0xF85F0000 | (31 << 5) | 16)      # ldur x16,[sp,#-16]
         emit(B(here(), base + 4 * i))
+    return start
+
+def site_br_targets(ins, targets):
+    """Jump table whose entries are not an equal-spaced base+4i span (older SDK):
+    save x16/x17, load the guest x18 target, compare it against every real target,
+    then branch through a landing pad that restores both registers. Target values
+    are materialized with movz/movk; no condition flags are changed (SUB+CBZ)."""
+    targets = sorted(set(targets))
+    start = here()
+    emit(STUR(16, 31, -16)); emit(STUR(17, 31, -24))
+    emit(MRS_TPIDRRO(16)); emit_slot_addr(16, 17, 'K18'); emit(LDRX(16, 16))
+    branches = []
+    for target in targets:
+        emit(MOVZ(17, target & 0xffff, 0))
+        emit(MOVK(17, (target >> 16) & 0xffff, 16))
+        emit(MOVK(17, (target >> 32) & 0xffff, 32))
+        emit(MOVK(17, (target >> 48) & 0xffff, 48))
+        emit(SUB(17, 16, 17))
+        slot = len(patch); emit(0)
+        branches.append((slot, target))
+    emit(0xD4200000)   # brk #0: a target outside the table is a hard failure, never a wild branch
+    for slot, target in branches:
+        pad = here()
+        struct.pack_into('<I', patch, slot, CBZ(17, PATCH_OFF + slot, pad))
+        emit(LDUR(17, 31, -24)); emit(LDUR(16, 31, -16)); emit(B(here(), target))
     return start
 
 def site_sysreg_read(ins, kind):
@@ -635,6 +669,88 @@ SIGNED_TABLES = {'277178b7dba1b6d4949a84778d4abc58': {
     0x5f2a9c: (0x5f2a90, 0x2d892e0, (884,892,16,900,-6516), 'f0030f2a12000010207ab0b85202008b40021fd6'),
     0x6397d8: (0x6397cc, 0x2d88e7c, (1376,1384,16,1392,1400,1408,-7264), 'fb0301aa12000010207ab0b85202008b40021fd6'),
 }}
+def ldrsw_table(ins):
+    """Recognize the older SDK's signed-offset jump table:
+       ldrsw xT, [xB, xIdx, lsl #2]; add x18, xT, xB; br x18.
+       Returns every real target (not a min/count span) or None.
+       The table setup can sit before an eh_frame function boundary, so the
+       context is disassembled from the image rather than from the function list."""
+    start = max(0, ins.address - 0x400)
+    insl = list(md.disasm(bytes(IMG[start:ins.address + 4]), start))
+    j = len(insl) - 1
+    add = add_i = None
+    for k in range(j - 1, max(0, j - 8), -1):
+        p = insl[k]
+        if p.mnemonic == 'add' and len(p.operands) == 3 and p.reg_name(p.operands[0].reg) == 'x18':
+            add, add_i = p, k; break
+    if os.environ.get('DM_DEBUG_TABLE'):
+        print('DBG table', hex(ins.address), 'add', add.op_str if add else None, 'ctx', len(insl))
+    if add is None:
+        return None
+    t_reg = add.reg_name(add.operands[1].reg)
+    b_reg = add.reg_name(add.operands[2].reg)
+    if os.environ.get('DM_DEBUG_TABLE'):
+        print('DBG regs', t_reg, b_reg)
+    for k in range(add_i - 1, max(0, add_i - 8), -1):
+        p = insl[k]
+        if p.mnemonic not in ('ldrsw', 'ldr'):
+            continue
+        m = re.fullmatch(r'(x\d+), \[(x\d+), (x\d+), lsl #2\]', p.op_str)
+        if not m or m.group(1) != t_reg or m.group(2) != b_reg:
+            continue
+        idx_reg = m.group(3)
+        if os.environ.get('DM_DEBUG_TABLE'):
+            print('DBG ldrsw', p.op_str, 'idx', idx_reg)
+        count = None
+        for q in reversed(insl[max(0, k - 32):k]):
+            if q.mnemonic == 'cmp':
+                mm = re.fullmatch(rf'{idx_reg.replace("x", "w")}, #(0x[0-9a-f]+|\d+)', q.op_str)
+                if not mm:
+                    continue
+                limit = int(mm.group(1), 0)
+                after = insl[insl.index(q) + 1:insl.index(q) + 5]
+                if any(r.mnemonic == 'b.hi' for r in after):
+                    count = limit + 1
+                elif any(r.mnemonic == 'b.hs' for r in after):
+                    count = limit
+                else:
+                    count = limit + 1
+                break
+        base = None
+        for k2 in range(k - 1, max(0, k - 96), -1):
+            q = insl[k2]
+            if q.mnemonic == 'adr' and q.reg_name(q.operands[0].reg) == b_reg:
+                base = q.operands[1].imm; break
+            if q.mnemonic == 'adrp' and q.reg_name(q.operands[0].reg) == b_reg:
+                page = q.operands[1].imm
+                for r in insl[k2 + 1:k]:
+                    if r.mnemonic == 'add' and len(r.operands) == 3 and \
+                            r.reg_name(r.operands[0].reg) == b_reg and r.reg_name(r.operands[1].reg) == b_reg:
+                        base = page + r.operands[2].imm; break
+                break
+        if os.environ.get('DM_DEBUG_TABLE'):
+            print('DBG base', hex(base) if base is not None else None, 'count', count)
+        if base is None:
+            return None
+        if count is None:
+            count = 0
+            while count < 256:
+                target = base + struct.unpack_from('<i', IMG, base + 4 * count)[0]
+                if not (0 <= target < TEXT_END and target % 4 == 0):
+                    break
+                count += 1
+        if not count or count > 256 or base + 4 * count > len(IMG):
+            return None
+        targets = [base + v for v in struct.unpack_from('<' + 'i' * count, IMG, base)]
+        if not all(0 <= target < TEXT_END and target % 4 == 0 for target in targets):
+            if os.environ.get('DM_DEBUG_TABLE'):
+                print('DBG bad targets', [hex(t) for t in targets])
+            return None
+        if os.environ.get('DM_DEBUG_TABLE'):
+            print('DBG table ok', len(targets), [hex(t) for t in targets[:5]])
+        return targets
+    return None
+
 funcs = sorted({func_of(a) for a, (k, _) in kinds.items() if k == 'x18'})
 for fa, fb in funcs:
     insl = list(md.disasm(bytes(IMG[fa:fb]), fa))
@@ -657,6 +773,12 @@ for fa, fb in funcs:
                         if q.mnemonic in ('ldrh', 'ldrsh') and num(q.reg_name(q.operands[0].reg)) == idx: width = 65536
                         if width: break
                     break
+            targets = None
+            if not base and not width and BUILD_ID not in SIGNED_TABLES:
+                targets = ldrsw_table(ins)
+            if targets:
+                jumps[ins.address] = ('targets', targets)
+                continue
             if not width and ins.address in SIGNED_TABLES.get(BUILD_ID, {}):
                 adrbase, table, offsets, dispatch = SIGNED_TABLES[BUILD_ID][ins.address]
                 assert IMG[ins.address - 16:ins.address + 4].hex() == dispatch, f'signed-table dispatch {ins.address:x}'
@@ -665,7 +787,7 @@ for fa, fb in funcs:
                 assert all(0 <= target < TEXT_END and target % 4 == 0 for target in targets)
                 base, width = min(targets), (max(targets) - min(targets)) // 4 + 1
             assert base and width, f'jump table {ins.address:x}'
-            jumps[ins.address] = (base, width)
+            jumps[ins.address] = ('linear', base, width)
         if ins.mnemonic == 'blr' and ins.op_str == 'x18':
             assert j > 0, f'call without prefix {ins.address:x}'
             previous = insl[j - 1]
@@ -737,7 +859,10 @@ for a in sorted(kinds):
     ins = dis(struct.unpack_from('<I', IMG, a)[0], a)
     if k == 'x18':
         m = ins.mnemonic
-        if m == 'br': st = site_br(ins, *jumps[a]); stat('br')
+        if m == 'br':
+            jump = jumps[a]
+            st = site_br_targets(ins, jump[1]) if jump[0] == 'targets' else site_br(ins, jump[1], jump[2])
+            stat('br')
         elif m in ('cbz', 'cbnz', 'tbz', 'tbnz'): st = site_cond(ins); stat('cond')
         elif m in ('adr', 'adrp'): st = site_pcrel(ins); stat('pcrel')
         elif m in ('blr', 'ret', 'b', 'bl') or (m == 'ldr' and '[' not in ins.op_str): raise RuntimeError(f'{a:x} {m} {ins.op_str}')
@@ -1007,7 +1132,9 @@ with open(P('sites.tsv'), 'w') as f:
         if a not in done: f.write(f'{a:#x}\t{kinds[a][0]}\n')
     for wseg in windows: f.write(f'{wseg[0].address:#x}\tW\t{wseg[-1].address + 4:#x}\n')
     for prefix, (call, _) in sorted(calls.items()): f.write(f'{prefix:#x}\tC\t{call + 4:#x}\n')
-    for a, (b, c) in jumps.items(): f.write(f'{a:#x}\tJ\t{b:#x}\t{c}\n')
+    for a, jump in jumps.items():
+        if jump[0] == 'targets': f.write(f'{a:#x}\tJT\t' + ','.join(f'{t:#x}' for t in jump[1]) + '\n')
+        else: f.write(f'{a:#x}\tJ\t{jump[1]:#x}\t{jump[2]}\n')
 with open(P('cuts.tsv'), 'w') as f:
     f.write(f'# BUILD_ID\t{BUILD_ID}\n')
     for off, ob, nb, why, scope in cuts: f.write(f'{off:#x}\t{ob}\t{nb}\t{scope}\t{why}\n')   # 列：偏移 原字节 新字节 作用域 理由 | Columns: offset, original bytes, new bytes, scope, reason

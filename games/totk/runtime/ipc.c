@@ -163,6 +163,19 @@ static void dispatch(IpcSession *s, uint32_t *m) {
     respond(m, tipc, &rs);
 }
 
+/* ---------- Kirby experimental fallback ---------- */
+/* SDK 4.4 opens services that the TOTK runtime does not implement. Keep the
+   session alive and answer each command with a zeroed success response so the
+   boot log shows which command is actually needed; replace the handlers one by
+   one once their semantics are known. */
+#if defined(KIRBY_GAME)
+static void generic_service(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    fprintf(stderr, "[kirby-ipc] %s command %u (type %u, data %u) -> zero success\n",
+            s->name, rq->cmd, rq->type, rq->data_size);
+    rs->data_size = 0;
+}
+#endif
+
 /* ---------- sm: service manager ---------- */
 static void sm(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
     switch (rq->cmd) {
@@ -173,7 +186,15 @@ static void sm(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
         const Service *found = NULL;
         for (unsigned i = 0; i < nservices; i++) if (!strcmp(services[i].name, name)) found = &services[i];
         pthread_mutex_unlock(&registry);
-        if (!found) { fprintf(stderr, "[totk-ipc] sm: service \"%s\" not implemented\n", name); runtime_trace_guest(trace_fp, trace_lr); runtime_fail("IPC service not implemented"); }
+        if (!found) {
+#if defined(KIRBY_GAME)
+            rs->move[rs->nmove++] = runtime_ipc_new_session(name, generic_service, NULL, NULL);
+            fprintf(stderr, "[kirby-ipc] opened generic service %s\n", name);
+            return;
+#else
+            fprintf(stderr, "[totk-ipc] sm: service \"%s\" not implemented\n", name); runtime_trace_guest(trace_fp, trace_lr); runtime_fail("IPC service not implemented");
+#endif
+        }
         rs->move[rs->nmove++] = runtime_ipc_new_session(found->name, found->handler, found->open ? found->open() : NULL, found->close);
         fprintf(stderr, "[totk-ipc] opened service %s\n", found->name);
         return;

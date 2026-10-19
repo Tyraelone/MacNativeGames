@@ -605,6 +605,14 @@ void runtime_event_signal(uint32_t hw) {
 __attribute__((weak)) void runtime_describe_address(uint64_t a, char *out, size_t n) { snprintf(out, n, "%#llx", (unsigned long long)a); }   // loader.c names modules
 __attribute__((weak)) uint64_t runtime_account_lock_owner(void) { return 0; }   // account.c is not linked into the thread probe
 __attribute__((weak)) void runtime_hle_describe(unsigned i, char *out, size_t n) { snprintf(out, n, "wrapper %u", i); }   // hle_stack.c names it
+static int h_type_of(uint32_t h) { unsigned i = h - 0x1000; return h >= 0x1000 && i < MAX_H ? g_h[i].type : -1; }
+static void signal_all_events(void) {
+    pthread_mutex_lock(&G);
+    for (int i = 1; i < MAX_H; i++) if (g_h[i].type == O_EVENT_W) ((event_t *)g_h[i].obj)->signaled = 1;
+    pthread_mutex_unlock(&G);
+    fprintf(stderr, "[totk-dump] signaled every guest event\n");
+}
+static void *signal_events_after(void *arg) { unsigned secs = (unsigned)(uintptr_t)arg; sleep(secs); signal_all_events(); return NULL; }
 static void dump_chain(uint64_t lr, uint64_t fp) {
     char where[96]; runtime_describe_address(lr, where, sizeof where); fprintf(stderr, "    %s", where);
     for (int i = 0; i < 10 && fp && !(fp & 15); i++) {
@@ -663,7 +671,7 @@ static void dump_threads(unsigned secs) {
         fprintf(stderr, "core=%d mask=%#llx ", t->cur_core, (unsigned long long)t->mask);
         fprintf(stderr, "h=%#x prio=%d %s wait=%d addr=%#llx key=%#llx tag=%#x word=%#x last_svc=%#x nsvc=%llu\n", t->handle, t->prio,
                 t->exited ? "exited" : t->started ? "run" : "new", t->wkind, (unsigned long long)t->waddr, (unsigned long long)t->wkey, t->wtag, word, t->last_svc, (unsigned long long)t->nsvc);
-        if (t->wkind == 4) { fprintf(stderr, "    waiting on %d handle(s):", t->nwh); for (int i = 0; i < t->nwh && i < 4; i++) fprintf(stderr, " %#x", t->wh[i]); fputc('\n', stderr); }
+        if (t->wkind == 4) { fprintf(stderr, "    waiting on %d handle(s):", t->nwh); for (int i = 0; i < t->nwh && i < 4; i++) fprintf(stderr, " %#x(type %d)", t->wh[i], h_type_of(t->wh[i])); fputc('\n', stderr); }
         if (t->last_hle) { char nm[256]; runtime_hle_describe((unsigned)t->last_hle - 1, nm, sizeof nm); fprintf(stderr, "    last host call while tracing: %s\n", nm); }
         dump_chain(t->last_lr, t->last_fp);
         if (!t->wkind && !t->exited && t->mport && nrun < 64) run[nrun++] = t;
@@ -689,4 +697,6 @@ __attribute__((constructor)) static void dump_init(void) {
     if (c) { pthread_t th; pthread_create(&th, NULL, list_check, (void *)(uintptr_t)strtoull(c, NULL, 0)); pthread_detach(th); }
     const char *e = getenv("TOTK_DUMP_AFTER"); if (!e) return;
     pthread_t th; pthread_create(&th, NULL, dump_after, (void *)(uintptr_t)strtoul(e, NULL, 10)); pthread_detach(th);
+    const char *sig = getenv("TOTK_SIGNAL_EVENTS");
+    if (sig) { pthread_t st; pthread_create(&st, NULL, signal_events_after, (void *)(uintptr_t)strtoul(sig, NULL, 10)); pthread_detach(st); }
 }

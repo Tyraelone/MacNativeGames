@@ -67,7 +67,14 @@ static uint8_t g_unimpl_seen[NVN_NFUNC];
 uint64_t nvn_unimpl_c(nvn_slot_t *slot, uint64_t x0, uint64_t x1, uint64_t x2) {
     unsigned i = (unsigned)(slot - nvn_slot);
     if (!g_unimpl_seen[i]++) LOG("【红】NVN 未实现被调用：%s (x0=%#llx x1=%#llx x2=%#llx)", nvn_names[i], x0, x1, x2);
+#if defined(KIRBY_GAME)
+    /* Kirby's older NVN reaches entry points that TOTK never calls. Keep the
+       boot moving and record the name; returning zero is only a diagnostic
+       fallback until each call has a real implementation. */
+    return 0;
+#else
     die("unimplemented NVN call %s",nvn_names[i]);
+#endif
 }
 
 #include "nvn_impl.h"

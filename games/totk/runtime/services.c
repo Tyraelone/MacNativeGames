@@ -237,6 +237,28 @@ void *runtime_observer(const char *name) {
  {"_ZN2nn2os21AllocateAddressRegionEPmm",observed_region},{"_ZN2nn2os19AllocateMemoryPagesEmm",observed_pages},{"nnosInitialize",observed_os_init},{"nninitInitializeSdkModule",observed_sdk_init},{"nninitStartup",observed_startup},{"nnMain",observed_main}};
  for(size_t i=0;i<sizeof(entries)/sizeof(entries[0]);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
 }
+#if defined(KIRBY_GAME)
+void hle_signal_system_event(void *event);
+static void *kirby_audio_events[16];
+static uint32_t kirby_audio_open(uint32_t *handle, void *event, const void *param, void *work, size_t size) {
+    typedef uint32_t (*OpenFn)(uint32_t *, void *, const void *, void *, size_t);
+    OpenFn fn = (OpenFn)runtime_symbol("_ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleEPNS_2os11SystemEventERKNS0_22AudioRendererParameterEPvm");
+    if (!fn) return 0xf601;
+    uint32_t r = fn(handle, event, param, work, size);
+    if (!r && handle && *handle < 16 && event) kirby_audio_events[*handle] = event;
+    return r;
+}
+static uint32_t kirby_audio_close(uint32_t handle) { if (handle < 16) kirby_audio_events[handle] = NULL; return 0; }
+static uint32_t kirby_audio_update(uint32_t handle, const void *config) {
+    (void)config;
+    if (handle < 16 && kirby_audio_events[handle]) hle_signal_system_event(kirby_audio_events[handle]);
+    return 0;
+}
+static uint32_t kirby_audio_render(uint32_t handle) {
+    if (handle < 16 && kirby_audio_events[handle]) hle_signal_system_event(kirby_audio_events[handle]);
+    return 0;
+}
+#endif
 void *runtime_override(const char *name) {
  static const struct {const char *name;void *fn;} entries[]={
   {"_ZN2nn2oe18GetDesiredLanguageEv",desired_language},
@@ -249,6 +271,11 @@ void *runtime_override(const char *name) {
   {"_ZN2nn3err26InitializeContextWriterApiEv",host_error_init},{"_ZN2nn2fs24InitializeForApplicationEv",host_fs_init},
   {"_ZN2nn4pctl10InitializeEv",host_pctl_init},{"_ZN2nn4diag34InitializeApplicationAbortObserverEv",host_abort_init}};
  for(size_t i=0;i<sizeof(entries)/sizeof(entries[0]);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;
+#if defined(KIRBY_GAME)
+ if(!strcmp(name,"_ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleEPNS_2os11SystemEventERKNS0_22AudioRendererParameterEPvm"))return (void *)kirby_audio_open;
+ if(!getenv("KIRBY_AUDIO_REAL") && !strcmp(name,"_ZN2nn5audio26RequestUpdateAudioRendererENS0_19AudioRendererHandleEPKNS0_19AudioRendererConfigE"))return (void *)kirby_audio_update;
+ if(!strcmp(name,"_ZN2nn5audio29ExecuteAudioRendererRenderingENS0_19AudioRendererHandleE"))return (void *)kirby_audio_render;
+#endif
  void *input=runtime_input_override(name);if(input)return input;void *font=runtime_font_override(name);if(font)return font;void *codec=runtime_codec_override(name);if(codec)return codec;void *movie=runtime_movie_override(name);if(movie)return movie;void *clock=runtime_time_override(name);if(clock)return clock;void *applet=runtime_applet_override(name);if(applet)return applet;void *swkbd=runtime_swkbd_override(name);if(swkbd)return swkbd;void *account=runtime_account_override(name);if(account)return account;void *fs=runtime_fs_override(name);if(fs)return fs;void *front=runtime_front_override(name);return front?front:runtime_gfx_override(name);
 }
 void runtime_core_checkpoint(void);
@@ -278,7 +305,12 @@ uint64_t runtime_svc(unsigned num,uint64_t *r,const char *module,uint64_t offset
   case 11:arc4random_buf(&value,8);break;
   case 12:value=ASLR_START;break;case 13:value=ASLR_SIZE;break;
   case 14:value=STACK_START;break;case 15:value=STACK_SIZE;break;
-  case 16:value=SYSTEM_RESOURCE_BUDGET;break;case 17:value=sizeof(stack_maps)+sizeof(alias_pages);break;case 18:value=0x0100f2c0115b6000ULL;break;
+  case 16:value=SYSTEM_RESOURCE_BUDGET;break;case 17:value=sizeof(stack_maps)+sizeof(alias_pages);break;
+#if defined(KIRBY_GAME)
+  case 18:value=0x01007e3006dda000ULL;break;
+#else
+  case 18:value=0x0100f2c0115b6000ULL;break;
+#endif
   case 20:value=(uintptr_t)user_exception_context;break;   /* UserExceptionContextAddress: SDK stores e.g. the dying-message region at +0x1c0 */case 23:value=1;break;
   /* AliasRegionExtraSize (18.0.0+): our alias reservation contains no
    * kernel-owned extension outside the range reported by ids 2 and 3. */

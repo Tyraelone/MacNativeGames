@@ -202,13 +202,19 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
     for (int i = 0; i < sc; i++) r->sinks[i] = sinks[i];
 
     /* ---- output ---- */
-    const uint32_t eo = effect_out_bytes(r);
+    uint32_t eo = effect_out_bytes(r);
     AudrenHeader o = {0};
     o.revision = REV(revision_number(h.revision) >= 1 ? revision_number(h.revision) : 1);
     o.memory_pools = npools * sizeof(AudrenPoolOut); o.voices = (uint32_t)vc * sizeof(AudrenVoiceOut);
     o.effects = (uint32_t)ec * eo; o.sinks = (uint32_t)sc * sizeof(AudrenSinkOut);
-    o.performance = 0x10; o.behavior = BEHAVIOR_OUT; o.render_info = RENDER_INFO_OUT;
+    o.performance = 0x10; o.behavior = BEHAVIOR_OUT; o.render_info = revision_number(h.revision) >= 9 ? RENDER_INFO_OUT : 0;
     o.total = (uint32_t)sizeof o + o.memory_pools + o.voices + o.effects + o.sinks + o.performance + o.behavior + o.render_info;
+    if (o.total > out_size) {
+        /* Older SDK revisions (Kirby's 4.4 client) do not reserve the per-effect
+           output words. Drop that section when the rest fits. */
+        uint32_t base = (uint32_t)sizeof o + o.memory_pools + o.voices + o.sinks + o.performance + o.behavior + o.render_info;
+        if (ec && eo && base <= out_size) { eo = 0; o.effects = 0; o.total = base; }
+    }
     if (o.total > out_size) { fprintf(stderr, "[totk-audio] output needs %u bytes, client gave %llu (effect out %u)\n", o.total, (unsigned long long)out_size, eo); runtime_fail("audio renderer output size"); }
     memset(output, 0, out_size);
     uint8_t *w = output; memcpy(w, &o, sizeof o); w += sizeof o;
@@ -222,11 +228,11 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
         AudrenVoiceOut vo = {r->voices[i].played, r->voices[i].consumed, r->voices[i].drops};
         memcpy(w, &vo, sizeof vo); w += sizeof vo;
     }
-    for (int i = 0; i < ec; i++) { w[0] = effects[i].enabled ? 3 : 4; if(eo>16)audio_mixer_effect_result(r,i,w+16,eo-16); w += eo; }   /* EffectStatus Enabled=3 / Disabled=4 */
+    if (eo) for (int i = 0; i < ec; i++) { w[0] = effects[i].enabled ? 3 : 4; if(eo>16)audio_mixer_effect_result(r,i,w+16,eo-16); w += eo; }   /* EffectStatus Enabled=3 / Disabled=4 */
     for (int i = 0; i < sc; i++) w += sizeof(AudrenSinkOut);
     w += 0x10;                                            /* performance: nothing written */
     w += BEHAVIOR_OUT;                                    /* behavior: no errors */
-    memcpy(w, &r->elapsed_frames, 8);
+    if (o.render_info) memcpy(w, &r->elapsed_frames, 8);
     pthread_mutex_unlock(&r->lock);
 }
 

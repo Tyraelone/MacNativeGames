@@ -312,6 +312,7 @@ static void signal_hex(const char *label,uint64_t value) {
 #define HOST_CTR_EL0 0x8555c005ULL
 static void crash(int num,siginfo_t *info,void *context) {
  ucontext_t *u=context;
+#ifndef KIRBY_GAME
  /* During save load, this optional game object can contain a tagged invalid
     reference. Treat it as absent, as the following cbz path expects. */
  if(num==SIGSEGV&&modules[0].base&&
@@ -332,6 +333,7 @@ static void crash(int num,siginfo_t *info,void *context) {
    }
   }
  }
+#endif
  /* EL0 cache maintenance that Darwin traps but Horizon allows: emulate exactly two encodings (SDK only). */
  if(num==SIGILL){uint32_t insn=*(const uint32_t *)(uintptr_t)u->uc_mcontext->__ss.__pc;unsigned rt=insn&31;
   if((insn&~31u)==0xd53b0020u){if(rt!=31)u->uc_mcontext->__ss.__x[rt]=HOST_CTR_EL0;u->uc_mcontext->__ss.__pc+=4;return;}   /* mrs Xt, CTR_EL0 */
@@ -409,7 +411,9 @@ int runtime_module_offset(uint64_t pc,const char **name,uint64_t *off) {
  return 0;
 }
 uintptr_t runtime_frame_controller_return_pc(void) {
-#ifdef TOTK_GAME_V143
+#if defined(KIRBY_GAME)
+ return 0;
+#elif defined(TOTK_GAME_V143)
  return 0; /* The older graphics diagnostic reads the pre-1.4 controller layout. */
 #else
  return (uintptr_t)modules[0].base + GAME_ADDR(0x8f6cbc);
@@ -419,22 +423,39 @@ uint64_t runtime_image_bytes(void) { uint64_t total=0;for(unsigned i=0;i<NM;i++)
 static void loader_ready(void) { fprintf(stderr,"[totk] rtld callback: modules linked\n"); }
 static void module_inits(void) {
  fprintf(stderr,"[totk] SDK startup returned; running module constructors\n");
- for(unsigned i=0;i<NM;i++){char detail[128];snprintf(detail,sizeof detail,TOTK_UI("运行 %s 游戏模块初始化代码（%u/%u）","Running the %s game module initializers (%u/%u)"),modules[i].name,i+1,(unsigned)NM);runtime_boot_status(TOTK_UI("初始化游戏模块","Initializing game modules"),detail);fprintf(stderr,"[totk] ENTER %s DT_INIT\n",modules[i].name);((void(*)(void))(modules[i].base+modules[i].init))();uint32_t state;memcpy(&state,modules[i].base+modules[i].ctor_flag,4);need(state==2,"DT_INIT deferred or skipped constructors");
+ for(unsigned i=0;i<NM;i++){char detail[128];snprintf(detail,sizeof detail,TOTK_UI("运行 %s 游戏模块初始化代码（%u/%u）","Running the %s game module initializers (%u/%u)"),modules[i].name,i+1,(unsigned)NM);runtime_boot_status(TOTK_UI("初始化游戏模块","Initializing game modules"),detail);fprintf(stderr,"[totk] ENTER %s DT_INIT\n",modules[i].name);((void(*)(void))(modules[i].base+modules[i].init))();uint32_t state;memcpy(&state,modules[i].base+modules[i].ctor_flag,4);
+#if defined(KIRBY_GAME)
+ need(state!=0,"DT_INIT deferred or skipped constructors");
+#else
+ need(state==2,"DT_INIT deferred or skipped constructors");
+#endif
  fprintf(stderr,"[totk] RETURN %s DT_INIT state=%u init_array_count=%llu\n",modules[i].name,state,(unsigned long long)(modules[i].init_size/8));}
 }
 void runtime_startup_checkpoint(uintptr_t caller) {
+#if defined(KIRBY_GAME)
+ (void)caller;return;
+#else
  if(!getenv("TOTK_VERIFY_STARTUP"))return;
  need(caller==(uintptr_t)modules[0].base+GAME_ADDR(0xe995c4),"checkpoint not reached from original nnMain");
  for(unsigned i=0;i<NM;i++){uint32_t state;memcpy(&state,modules[i].base+modules[i].ctor_flag,4);need(state==2,"constructor checkpoint state");}
  printf("{\"status\":\"pass\",\"phase\":4,\"original_nnMain_return_pc\":\"0x%x\",\"scope\":\"all DT_INIT constructor loops completed; original nnMain prefix executed; stops at focus setup\"}\n", GAME_ADDR(0xe995c4));fflush(stdout);_exit(0);
+#endif
 }
 static void module_finis(void) { runtime_fail("guest exited: module finalizers not yet implemented"); }
 static void boot(void) {
  fprintf(stderr,"[totk] game version %s\n", TOTK_GAME_VERSION);
  runtime_boot_status(TOTK_UI("启动游戏运行环境","Starting the game runtime"),TOTK_UI("连接游戏代码与 macOS 系统服务","Connecting the game code to macOS system services"));
  runtime_thread_init();uint32_t main_handle=svc_thread_main_init();
+#if defined(KIRBY_GAME)
+ if(getenv("TOTK_HLE_TRACE"))runtime_hle_trace_set(2);
+#endif
+#if defined(KIRBY_GAME)
+ fprintf(stderr,"[totk] ENTER nn::init::Start (SDK 4.4 signature)\n");
+ ((void(*)(uint64_t,uint64_t,void(*)(void),void(*)(void)))required("_ZN2nn4init5StartEmmPFvvES2_"))(main_handle,0,loader_ready,module_inits);
+#else
  fprintf(stderr,"[totk] ENTER original nn::init::Start sdk+0xfa060\n");
  ((void(*)(uint64_t,uint64_t,void(*)(void),void(*)(void),void(*)(void)))required("_ZN2nn4init5StartEmmPFvvES2_S2_"))(main_handle,0,loader_ready,module_inits,module_finis);
+#endif
  runtime_fail("SDK Start unexpectedly returned");
 }
 /* Host aborts (e.g. Metal validation assertions) print the host call stack before the process ends. */
@@ -458,6 +479,9 @@ int main(int argc,char **argv) {
  for(unsigned i=0;i<NM;i++)map_module(&modules[i],argv[1]);
  for(unsigned i=0;i<NM;i++)relocate(&modules[i]);
  for(unsigned i=0;i<NM;i++)if(!strcmp(modules[i].name,"main"))runtime_game_patches(&modules[i]);
+#if defined(KIRBY_GAME)
+ for(unsigned i=0;i<NM;i++)runtime_kirby_sdk_patches(&modules[i]);
+#endif
 #if !TARGET_OS_IPHONE
  if(!strcmp(argv[2],"export-ios")){const char *out=getenv("TOTK_EXPORT_IOS");need(out!=NULL,"export-ios needs TOTK_EXPORT_IOS=<dir>");export_ios_text(argv[1],out);return 0;}
 #endif

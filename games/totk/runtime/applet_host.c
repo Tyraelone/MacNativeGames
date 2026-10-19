@@ -49,6 +49,8 @@ static uint32_t pop(void) {
 }
 
 /* ---------- nn::prepo: play reports are not transmitted (no Nintendo servers) ---------- */
+static void prepo_init(void) { fprintf(stderr, "[totk] play report service initialized locally\n"); }
+static void prepo_fini(void) { }
 static uint64_t reports;
 static unsigned report_save(const void *report) { (void)report; if (!(reports++ % 100)) fprintf(stderr, "[totk] play report kept local (not transmitted), count %llu\n", (unsigned long long)reports); return 0; }
 static unsigned report_save_uid(const void *report, const void *uid) { (void)uid; return report_save(report); }
@@ -82,6 +84,7 @@ void *runtime_applet_override(const char *name) {
         {"_ZN2nn2oe44SetUserInactivityDetectionTimeExtendedUnsafeEb", inactivity_extended},
         {"_ZN2nn2oe17FinishStartupLogoEv", finish_startup_logo}, {"_ZN2nn2oe25TryPopNotificationMessageEPj", try_pop},
         {"_ZN2nn2oe22PopNotificationMessageEv", pop},
+        {"_ZN2nn5prepo10InitializeEv", prepo_init}, {"_ZN2nn5prepo8FinalizeEv", prepo_fini},
         {"_ZN2nn5prepo10PlayReport4SaveEv", report_save}, {"_ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE", report_save_uid},
         {"_ZN2nn5prepo28RequestImmediateTransmissionEv", immediate_transmission},
         {"_ZN2nn5prepo27AddInternetConnectionStatusEPNS0_10PlayReportEPKcS4_S4_", connection_status},

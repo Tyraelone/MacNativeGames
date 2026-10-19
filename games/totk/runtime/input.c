@@ -86,6 +86,34 @@ static uint32_t show_controller_support(ControllerSupportResult *out,const void 
  static int once;if(!once++)fprintf(stderr,"[totk] controller support applet: one player on controller %#x\n",pad_id());
  return 0;
 }
+/* SDK 4.4 public hid entry points used by Kirby but not by TOTK. They answer
+   from the same single full-key controller; touch, debug pad and six-axis are
+   reported as present but idle so the SDK never opens the raw hid service. */
+static void initialize_debug_pad(void) { }
+static void debug_pad_state(void *out) { (void)out; }
+static int npad_full_state(NpadState *out, const uint32_t *id) { return full_states(out, 1, id); }
+static int npad_handheld_state(NpadState *out, const uint32_t *id) { return handheld_states(out, 1, id); }
+static int npad_joy_state(NpadState *out, const uint32_t *id) { return disconnected_states(out, 1, id); }
+static int joy_hold_type(void) { return 0; }
+static int joy_assignment(const uint32_t *id) { (void)id; return 0; }
+static void joy_single(const uint32_t *id) { (void)id; }
+static void joy_single_type(const uint32_t *id, int type) { (void)id; (void)type; }
+static void swap_assignment(const uint32_t *a, const uint32_t *b) { (void)a; (void)b; }
+static void lr_assignment(int on) { (void)on; }
+static uint32_t supported_style_set(void) { pthread_mutex_lock(&inputLock); uint32_t v = styles; pthread_mutex_unlock(&inputLock); return v; }
+static void six_start_public(const void *h) { (void)h; }
+static void six_stop_public(const void *h) { (void)h; }
+static int six_state_public(void *out, const void *h) { (void)out; (void)h; return 0; }
+static int six_rest_public(const void *h) { (void)h; return 1; }
+static void touch_init(void) { }
+static void touch_state(void *out) { (void)out; }
+static void strap_guide(void) { }
+static void explain_text(void *arg, const char *text, const uint32_t *id) { (void)arg; (void)text; (void)id; }
+static int vibration_init(const void *h) { (void)h; return 0; }
+static int vibration_send(const void *h, const void *v) { (void)h; (void)v; return 0; }
+static int vibration_retrieve(void *v, int count, void *ctx) { (void)v; (void)count; (void)ctx; return 0; }
+static int vibration_parse(void *info, void *ctx, const void *data, size_t size) { (void)info; (void)ctx; (void)data; (void)size; return 0; }
+
 /* Vibration devices and the six-axis sensor: runtime/hid_feedback.c (none unless TOTK_RUMBLE=1 / TOTK_GYRO=1). */
 void *runtime_input_override(const char *name){
  void *feedback=runtime_hid_feedback_override(name);if(feedback)return feedback;
@@ -97,7 +125,32 @@ void *runtime_input_override(const char *name){
  {"_ZN2nn3hid18SetNpadJoyHoldTypeENS0_15NpadJoyHoldTypeE",hold_type},{"_ZN2nn3hid14DisconnectNpadERKj",disconnect},
  {"_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_20ControllerSupportArgE",show_controller_support},
  {"_ZN2nn3hid15InitializeMouseEv",initialize_mouse},{"_ZN2nn3hid18InitializeKeyboardEv",initialize_keyboard},
- {"_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi",mouse_states},{"_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE",keyboard_state}};
+ {"_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi",mouse_states},{"_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE",keyboard_state},
+ {"_ZN2nn3hid18InitializeDebugPadEv",initialize_debug_pad},{"_ZN2nn3hid16GetDebugPadStateEPNS0_13DebugPadStateE",debug_pad_state},
+ {"_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj",npad_full_state},
+ {"_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj",npad_handheld_state},
+ {"_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj",npad_joy_state},
+ {"_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyLeftStateERKj",npad_joy_state},
+ {"_ZN2nn3hid12GetNpadStateEPNS0_17NpadJoyRightStateERKj",npad_joy_state},
+ {"_ZN2nn3hid18GetNpadJoyHoldTypeEv",joy_hold_type},
+ {"_ZN2nn3hid20GetNpadJoyAssignmentERKj",joy_assignment},
+ {"_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKj",joy_single},
+ {"_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKjNS0_17NpadJoyDeviceTypeE",joy_single_type},
+ {"_ZN2nn3hid18SwapNpadAssignmentERKjS2_",swap_assignment},
+ {"_ZN2nn3hid21StartLrAssignmentModeEv",lr_assignment},{"_ZN2nn3hid20StopLrAssignmentModeEv",lr_assignment},
+ {"_ZN2nn3hid24GetSupportedNpadStyleSetEv",supported_style_set},
+ {"_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE",six_start_public},
+ {"_ZN2nn3hid17StopSixAxisSensorERKNS0_19SixAxisSensorHandleE",six_stop_public},
+ {"_ZN2nn3hid21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE",six_state_public},
+ {"_ZN2nn3hid21IsSixAxisSensorAtRestERKNS0_19SixAxisSensorHandleE",six_rest_public},
+ {"_ZN2nn3hid21InitializeTouchScreenEv",touch_init},
+ {"_ZN2nn3hid19GetTouchScreenStateILm16EEEvPNS0_16TouchScreenStateIXT_EEE",touch_state},
+ {"_ZN2nn3hid24ShowControllerStrapGuideEv",strap_guide},
+ {"_ZN2nn3hid14SetExplainTextEPNS0_20ControllerSupportArgEPKcRKj",explain_text},
+ {"_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE",vibration_init},
+ {"_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE",vibration_send},
+ {"_ZN2nn3hid22RetrieveVibrationValueEPNS0_14VibrationValueEiPNS0_26VibrationFileParserContextE",vibration_retrieve},
+ {"_ZN2nn3hid18ParseVibrationFileEPNS0_17VibrationFileInfoEPNS0_26VibrationFileParserContextEPKvm",vibration_parse}};
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
 }
 

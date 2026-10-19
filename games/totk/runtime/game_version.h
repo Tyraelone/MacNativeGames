@@ -3,7 +3,19 @@
 #pragma once
 #define GAME_ADDR_JOIN(x) GAME_ADDR_##x
 #define GAME_ADDR(x) GAME_ADDR_JOIN(x)
-#if defined(TOTK_GAME_V143)
+#if defined(KIRBY_GAME)
+#define TOTK_GAME_VERSION "Kirby Star Allies 4.1.0"
+#define TOTK_GAME_DIR "kirby"
+/* TOTK-only patch sites: the Kirby profile compiles the no-op game_patches_kirby.c
+   and never calls the software-keyboard fast path, so these are only placeholders
+   for code that is not reached. */
+#define GAME_ADDR_0x15ecb0c 0
+#define GAME_ADDR_0x8f6cbc 0
+#define GAME_ADDR_0xe995c4 0
+#define GAME_ADDR_0x2aa4fa0 0
+#define GAME_ADDR_0x453f648 0
+#define GAME_OUTPUT_CALL_WORD 0
+#elif defined(TOTK_GAME_V143)
 #define TOTK_GAME_VERSION "1.4.3"
 #define TOTK_GAME_DIR "v143"
 #define GAME_ADDR_0x15ecb0c 0x1bd01c4
