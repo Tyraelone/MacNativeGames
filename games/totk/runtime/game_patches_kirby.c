@@ -84,6 +84,14 @@ void runtime_kirby_sdk_patches(Module *m) {
     }
     fprintf(stderr, "[kirby] sdk AbortImpl hooks installed at 0x444a8..0x444b0 -> patch+%#llx host=%p\n",
             (unsigned long long)m->patch_off, (void *)kirby_abort_probe);
+    /* The generic abort trap ends in an infinite branch. In this experimental
+       profile, return instead so an asserting worker can unwind and the scene
+       can continue; the svcBreak handler already logs the assertion. */
+    uint32_t *trap_spin = (uint32_t *)(void *)(m->base + 0x456dc);
+    if (*trap_spin == 0x14000000u) {
+        *trap_spin = 0xD65F03C0u;   /* ret */
+        fprintf(stderr, "[kirby] patched sdk abort trap spin to return\n");
+    }
     if (getenv("KIRBY_TRAP_PROBE")) {
         uint32_t *trap_stub = (uint32_t *)(void *)(m->base + m->patch_off + 0x20);
         trap_stub[0] = 0x58000050u;

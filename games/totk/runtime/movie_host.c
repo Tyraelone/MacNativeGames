@@ -364,6 +364,8 @@ static int h_get_output_format(void *obj, void *md) {
         G.md_set_int32(md, "sample-rate", 48000);
         G.md_set_int32(md, "channel-count", 2);
         G.md_set_int32(md, "audio-format", 2);
+        G.md_set_int32(md, "pcm-encoding", 2);
+        G.md_set_int32(md, "channel-mask", 3);
         return ST_OK;
     }
     set_format(m, md); return ST_OK;
@@ -374,7 +376,7 @@ static int h_start(void *obj) {
     Signals s = {0};
     pthread_mutex_lock(&m->mu);
     if (!m->configured) { pthread_mutex_unlock(&m->mu); return ST_NOT_CONFIGURED; }
-    m->started = 1; m->movie_frame_index = 0; note(m, &s, EV_INPUT); if (m->stub && !m->stub_audio) note(m, &s, EV_OUTPUT);
+    m->started = 1; m->movie_frame_index = 0; note(m, &s, EV_INPUT); if (m->stub && !m->stub_audio) { note(m, &s, EV_FORMAT); note(m, &s, EV_OUTPUT); }
     pthread_mutex_unlock(&m->mu); fire(&s);
     return ST_OK;
 }
@@ -456,6 +458,7 @@ static int h_acquire_output(void *obj, int *index, int64_t *time, unsigned *flag
     *index = -1; *time = 0; *flags = 0; *remaining = 0; int st = ST_NO_OUTPUT;
     if (m->stub && !m->stub_audio) {
         if (m->movie_frames && m->movie_frame_index < m->movie_frame_count) {
+            m->out_held[0] = 1;
             *index = 0; *time = (int64_t)m->movie_frame_index * 33333; *flags = 0; st = ST_OK;
             if ((m->movie_frame_index % 120) == 0) LOG("stub video frame %d/%d", m->movie_frame_index, m->movie_frame_count);
         } else {
@@ -478,6 +481,7 @@ static int h_get_output(void *obj, int index, void *buf) {
     pthread_mutex_lock(&m->mu);
     if (m->stub && !m->stub_audio && m->movie_frames && m->movie_frame_index < m->movie_frame_count) {
         uint8_t *dst = G.buf_base(buf);
+        LOG("stub get_output frame=%d capacity=%zu need=%zu dst=%p", m->movie_frame_index, G.buf_capacity(buf), m->movie_frame_bytes, (void *)dst);
         if (dst && G.buf_capacity(buf) >= m->movie_frame_bytes) {
             memcpy(dst, m->movie_frames + (size_t)m->movie_frame_index * m->movie_frame_bytes, m->movie_frame_bytes);
             G.buf_set_range(buf, 0, (int)m->movie_frame_bytes);
@@ -505,6 +509,8 @@ static int h_release_output(void *obj, int index) {
     Signals s = {0};
     pthread_mutex_lock(&m->mu);
     if (m->stub && !m->stub_audio) {
+        LOG("stub release_output index=%d frame=%d", index, m->movie_frame_index);
+        if (index >= 0 && index < OUT_BUFS) m->out_held[index] = 0;
         if (index == 0 && m->movie_frame_index < m->movie_frame_count) m->movie_frame_index++;
         pthread_mutex_unlock(&m->mu); return ST_OK;
     }
@@ -531,6 +537,8 @@ static int h_get_output_buffer_format(void *obj, int index, void *md) {
         G.md_set_int32(md, "sample-rate", 48000);
         G.md_set_int32(md, "channel-count", 2);
         G.md_set_int32(md, "audio-format", 2);
+        G.md_set_int32(md, "pcm-encoding", 2);
+        G.md_set_int32(md, "channel-mask", 3);
         return ST_OK;
     }
     set_format(m, md); return ST_OK;
