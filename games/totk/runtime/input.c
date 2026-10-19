@@ -119,9 +119,12 @@ static uint32_t show_controller_support(ControllerSupportResult *out,const void 
 }
 /* SDK 4.4 public hid entry points used by Kirby but not by TOTK. They answer
    from the same single full-key controller; touch, debug pad and six-axis are
-   reported as present but idle so the SDK never opens the raw hid service. */
+   reported idle so the SDK never opens the raw hid service. */
 static void initialize_debug_pad(void) { }
-static void debug_pad_state(void *out) { (void)out; }
+/* DebugPadState is 0x20 bytes in SDK 4.4. Kirby reads its button words even
+   when the debug pad is disconnected, so leaving the caller's stack untouched
+   produces phantom presses that mask the real controller's press edge. */
+static uint32_t debug_pad_state(void *out) { if(!out)runtime_fail("debug pad output pointer");memset(out,0,0x20);return 0; }
 static int npad_full_state(NpadState *out, const uint32_t *id) { return full_states(out, 1, id); }
 static int npad_handheld_state(NpadState *out, const uint32_t *id) { return handheld_states(out, 1, id); }
 static int npad_joy_state(NpadState *out, const uint32_t *id) { return disconnected_states(out, 1, id); }

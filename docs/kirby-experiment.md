@@ -1,6 +1,6 @@
 # 星之卡比 新星同盟 4.1.0：原生打包实验记录
 
-**结论：已经打通“提取 → 改写 → 装载 → SDK 启动 → Metal/VI/NVN 窗口 → 读取 RomFS 内容”的打包链路，并生成了一个可双击的实验 App；但还没有进入游戏画面。** 当前在 `nn::account` 的关闭路径上触发 SDK 断言，离“能玩”仍差服务实现、旧版 HID/NVN 语义和逐场景验证。这不是改一个标题 ID 就能完成的事，工作量是“新做一款游戏的移植”。
+**当前状态（2026-10-19）：标题、存档选择、故事模式菜单、世界地图和第一关都已进入；第一关内可移动、跳跃并触发动作。** 旧版 SDK 的 DebugPad 读取和账户句柄路径已修正。3D 后处理仍有严重错层，实验 App 现用简化的场景颜色与天空合成来提供清晰画面；真实光照与长期游玩尚未验证。下文第 1–16 轮保留了当时的诊断过程，其中早期“仍在 Movie.Scene”和“NOTHING TO DO”等结论已经过时，最新证据见文末。
 
 本记录对应分支 `kirby-experiment`，游戏数据、密钥、构建中间文件和 App 都在项目目录外。
 
@@ -38,7 +38,7 @@
 9. 初始化 NVN 窗口：交换链 2 张，1920×1080，格式 0x38
 10. 创建 10 余个 guest 线程，音频渲染线程持续输出（REV4，48 kHz）
 
-之后在 `nn::account::CloseUser` 的 SDK 断言处退出（`sdk+0xb3530`）。此前的另一个崩溃点是 HID 输出缓冲区写入过大导致栈被破坏；已改为不越界写入。现在剩下的不是“文件没放对”，而是旧 SDK 的系统服务/对象语义。
+当时在 `nn::account::CloseUser` 的 SDK 断言处退出（`sdk+0xb3530`）。后续已修正 SDK 本地账户调用，且进入标题和世界地图；这一段是历史诊断。
 
 ## 实验 App
 
@@ -53,7 +53,7 @@
 - `Contents/Resources/romfs/romfs.bin` + `runtime-index.bin`
 - `Contents/Resources/fonts/`：固件 22.5.0 的六个共享字体
 - `Contents/MacOS/Kirby --check` 返回 `ok: Kirby Star Allies 4.1.0 experimental bundle`
-- 直接打开会创建窗口并走到上述断言，**不能游玩**；日志在 `kirby-work/app.log`
+- 启动器及运行状态见文末最新记录；本节描述的是最初打包版本。
 
 ## 关键改动
 
@@ -93,7 +93,7 @@
 - `nvn_mtl.m`：Kirby 的图形池请求 1300 MiB，超过 TOTK 的 1 GiB 零拷贝上限，暂提高到 2 GiB
 - 这些是诊断性 fallback，不是正确实现；后续必须逐项补语义，特别是旧的 `nvnDeviceSetIntermediateShaderCache` 和资源布局
 
-## 当前阻塞
+## 早期阻塞（历史记录）
 
 1. **`nn::account::CloseUser` 断言**：实验运行时在 `sdk+0xb3530` 触发 `diag::AbortImpl`，调用链来自 `main+0x7950`。已尝试把 `CloseUser` 入口改成 `ret`，断言仍在（说明还有别的对象/服务路径在失败），需要解析 SDK 断言参数或实现 account 服务对象。
 2. **旧 HID 结构体布局**：Kirby 的 `GetTouchScreenState<16>`、`GetSixAxisSensorState`、`DebugPadState` 与 TOTK 的尺寸不同；目前不写缓冲区以避免破坏栈，但游戏可能读取到未初始化值。
@@ -139,7 +139,7 @@ TOTK_PROFILE_DIR="$WORK/profile" \
 
 实验 App 的启动器已经把这些环境变量指向 bundle 内资源；`KIRBY_AUDIO_REAL=1` 必须保留，否则音频更新会被 stub 掉，启动会更早停住。
 
-## 下一步建议
+## 早期下一步建议（历史记录）
 
 按“先让启动链路稳定，再谈画面”的顺序：
 
@@ -478,3 +478,56 @@ key 40 500
 结果：游戏仍创建 4 MB 全零 `savedata.dat`，TitleMenu 仍是 `NOTHING TO DO`；没有写入任何存档内容。说明问题不是“文件存在导致游戏跳过初始化”，而是更上层的 `CheckSaveData`/`TitleMenuData` 状态/格式没有被游戏接受。
 
 这个开关只在环境变量下生效，不影响正常路径。
+
+### 第十七轮：纠正标题画面判断，找到 A 键无效的根因
+
+此前的窗口截图上下倒置，倒过来后按钮文字实际上是 **PRESS A BUTTON**，不是 `NOTHING TO DO`。先前据此推断“标题菜单数据为空”是错误的。
+
+`main+0x78260` 每帧通过 `nn::hid::GetNpadState` 读取 A 位 `0x1`；同一条更新链在 `main+0x77d98` 还调用 `nn::hid::GetDebugPadState`。旧宿主实现完全不写 DebugPad 输出，游戏随后把调用方未初始化的 32 字节当作按钮读入，可能造成虚假的持续按键。根据 SDK 4.4 的实现，`DebugPadState` 的大小是 `0x20`；宿主现在把这 32 字节清零并返回成功。修正后，A 键能从标题进入三个 0% 的存档位，继续进入故事模式菜单和世界地图。
+
+同时修正了 `nn::account::OpenPreselectedUser` 的 ABI：它返回 `Result`（成功为 0），与返回布尔值的 `TryOpenPreselectedUser` 不同；SDK 本地的 `OpenPreselectedUser` 与 `CloseUser` 调用现转到宿主实现，使用有效的 24 字节用户句柄。此修复消除了原来为绕开空账户对象而返回零句柄的补丁，但标题 A 键卡住的直接原因是 DebugPad 输出。
+
+### 第十八轮：世界地图可移动，显示方向按场景切换
+
+标题和菜单的原始交换链画面上下颠倒，而世界地图的原始画面是正向的。固定翻转会把地图 HUD 倒过来。实测每帧的 NVN 渲染通道数：菜单约 7–8，世界地图约 35；显示端据此只翻转菜单画面，宿主绘制的 FPS/状态覆盖层保持正向。地图中按方向键可移动卡比，场景和相机随之变化。
+
+地图的 3D 光照明显偏暗，并有规则网格和混合叠影。为了能看见路径，显示端仅对 3D 场景使用临时伽马补偿；它不修复底层着色器/混合问题。测试截图与日志留在项目外：`~/Library/Application Support/MacNativeGames/tests/kirby-after-a-20261019/`、`kirby-gamma20c-20261019/`。
+
+### 第十九轮：进入第一关
+
+在世界地图向右移动约 2 秒、向左回调约 0.55 秒后，卡比停在第一关入口，画面显示 `グリーングリーティング` 和 `A はいる`。按 A 后进入第一关，显示关卡标题和角色。首次进入时需翻译数百个着色器，截图时约 2 FPS，仍有严重的叠影与光照错误。证据在外部 `~/Library/Application Support/MacNativeGames/tests/kirby-stage-entry-20261019/` 的 `at-portal.png`、`after-portal.png` 和 `run.log`；这只能证明已进入关卡，不能证明关卡内已可顺畅游玩。
+
+### 第二十轮：验证第一关内操作
+
+等待关卡标题动画结束后，第一关的生命值 HUD 和场景持续运行，截图约 30 FPS。继续按方向键，卡比及相机向右移动；按 A，卡比跳起；按 B，触发动作特效。画面右侧出现敌人和操作提示，说明并非停在关卡介绍页。截图在项目外的 `~/Library/Application Support/MacNativeGames/tests/kirby-stage-flow-20261019/`：`entered22.png`、`entered37.png`、`play-right.png`、`play-jump.png`、`play-b.png`。场景的深度、光照及混合结果仍有大面积叠影和遮挡；这里只验证了第一关开头的基础操作，不能推断全关或完整游戏流程稳定。
+
+### 第二十一轮：更新外部实验 App
+
+将新运行时装入项目外的 `kirby-work/Kirby Star Allies (Experimental).app`，启动器启用本地着色器服务，并移除旧的自动跳标题按键脚本，避免按键在新流程中误选菜单。使用 App 内运行时、RomFS、字体和电影占位文件做独立启动，标题画面正常，截图留在外部 `~/Library/Application Support/MacNativeGames/tests/kirby-bundle-20261019/title.png`。这次启动暴露出着色器缓存和游戏位置文件原本会写到 App 包内、使签名失效；启动器现把它们定向到用户数据目录，原缓存也已移动到那里。重新做 ad-hoc 签名，App 内运行时与已测二进制逐字节一致。App 和其完整构建数据继续放在项目目录外。
+
+### 第二十二轮：定位 3D 错层，提供可操作的画面
+
+在第一关的单帧纹理转储中，场景颜色附件本身正向且清楚；后处理通道把它翻转、与其他方向的附件混合，最后出现网格与叠影。只修正一个或三个全屏顶点着色器的纹理坐标都不足以恢复整条后处理链。证据在项目外 `~/Library/Application Support/MacNativeGames/tests/kirby-graphics-20261019/`、`kirby-uv-nav-20261019/`、`kirby-uv3-stage-20261019/`。
+
+Kirby 运行时现实现同格式 2D 贴图缩放拷贝，供后处理金字塔使用。为让场景能清楚操作，`KIRBY_SCENE_PRESENT=1` 在最终上屏前合成已正确绘制的场景颜色附件，并在其空白天空处取天空附件；后续游戏 HUD 仍由原来的交换链通道绘制。该模式只作用于 Kirby 已识别的 1440×810 多附件场景与最终全屏着色器，也自动修正最终场景四边形的纹理坐标。它绕过错误的光照和后处理，因此画面较平、较亮，并非原版光照的修复。
+
+首次对照：只显示场景颜色时，第一关清晰但天空黑色；按颜色附件的空白区域补天空后，第一关卡比、地形、天空、生命值 HUD 均清晰，叠影消失。截图在外部 `~/Library/Application Support/MacNativeGames/tests/kirby-albedo-present-20261019/stage.png` 和 `kirby-scene2-present-20261019/stage.png`。从未手工修改的着色器缓存启动，世界地图也得到清晰画面，见 `kirby-final-verify-20261019/map.png`。第一关之外的完整流程和实际光照仍需继续验证。
+
+### 第二十三轮：App 内第一关复测
+
+外部实验 App 已装入含简化场景合成的运行时，启动器启用 `KIRBY_SCENE_PRESENT=1` 并保持存档、着色器缓存位于用户数据目录。直接调用 App 包内二进制并使用独立测试档案，从标题进入第一关；在清晰的场景画面下，向右移动后相机随角色移动，按 A 跳跃，按 B 触发动作。项目外证据为 `~/Library/Application Support/MacNativeGames/tests/kirby-app-play-20261019/` 中的 `portal3.png`、`stage.png`、`right.png`、`jump.png`、`action.png` 与 `run.log`。签名验证和 App `--check` 通过。此次只覆盖第一关开头，并未证明整部游戏可通关。
+
+简化场景不需要旧后处理画面使用的强提亮。对比完全关闭提亮和较柔和的 0.55 指数后，选择后者供实验 App 使用；地图对照截图分别在外部 `kirby-normal-color-20261019/map.png` 和 `kirby-mid-color-20261019/map.png`。最终二进制已重新装入外部 App，签名验证、`--check` 和构建产物逐字节比较均通过。
+
+### 第二十四轮：固定菜单方向，按 3D/菜单切换简化合成
+
+此前按“每帧渲染通道数 < 20”翻转上屏，标题虽然只有 3D 背景，但通道数会超过阈值，结果标题/存档菜单仍被翻转。现在默认 **不翻转上屏**；实测交换链本身的标题画面是正向的：
+
+- `wshot` 标题：`星のカービィ スターアライズ`、`PRESS A BUTTON`、Nintendo/HAL 版权均正向；
+- `shot`（NVN drawable）与 `wshot`（窗口）方向一致。
+
+同时把简化场景合成限制到 **3D 帧**（上一帧通道数 ≥ 20）：标题、存档/故事菜单不再走 `KIRBY_SCENE_PRESENT` 的场景替换，保留原始菜单图层；第一关/世界地图仍使用简化合成，避免原来的网格/叠影。
+
+`KIRBY_FORCE_FLIP`、`KIRBY_NO_FLIP`、`KIRBY_LIT_PRESENT=<n>` 保留为诊断开关；默认行为不再依赖它们。
+
+第一关截图仍显示“简化场景”（albedo + 天空），原始光照/后处理没有恢复；这是目前画面与原版的已知差异。

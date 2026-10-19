@@ -3522,6 +3522,12 @@ static id<MTLRenderPipelineState> g_enc_pso; static id<MTLDepthStencilState> g_e
 static int g_enc_vis, g_enc_has_vis;   // 本编码器当前的可见性计数模式（0 关 / 槽号 + 1）、是否挂了可见性缓冲 | This encoder's current visibility count mode (0 off / slot number + 1), and whether a visibility buffer is attached
 static int g_pso_dirty = 1, g_dss_dirty = 1;   // 回放中改了管线 / 深度模板相关状态 | Pipeline / depth-stencil related state was changed during replay
 static uint64_t g_stat_args_enc, g_stat_args_reuse;   // 参数缓冲：新编 / 复用次数 | Argument buffer: new-encode / reuse counts
+#ifdef KIRBY_GAME
+static _Atomic int g_kirby_3d;
+static id<MTLTexture> g_kirby_albedo_debug;
+static id<MTLTexture> g_kirby_sky_debug, g_kirby_scene_debug;
+static uint64_t g_kirby_albedo_debug_frame, g_kirby_scene_debug_frame;
+#endif
 uint64_t g_draw_skip[16];   // TOTK: draws dropped in the replay, by reason (logged with the per-frame draw count)
 static uint64_t g_stat_draw, g_stat_pass, g_bw_load, g_bw_store, g_pass_full_rw, g_udc_saved_bytes;   // 带宽账：附件读入 / 写出字节、全量读写通道数 | Bandwidth ledger: attachment load / store bytes, number of full load-store passes
 // DM_NVN_PASSDUMP：逐条记通道附件 / 采样 / 出图（贴图按序号），供离线做数据流分析；P / D / R / S 行的通道号一致（= 开通道后的 g_stat_pass）
@@ -4438,13 +4444,26 @@ static void shmap_load(void) {
     id<MTLLibrary> bflib; int bflib_tried; NSMutableDictionary<NSString *, id<MTLFunction>> *bffn; id<MTLFunction> no_depth_fn;
     NSString *src, *src_path; NSDictionary<NSNumber *, NSString *> *io; NSMutableDictionary<NSString *, id<MTLFunction>> *vpatch; id<MTLFunction> mfx_fn[8]; uint8_t mfx_tried[8]; } @end   // TOTK: MSL source, user varyings (locn -> type), patched vertex functions   // bflib：可读 tile 版本 <键>_bf（合并 B 第 2 步） | bflib: readable-tile version <key>_bf (merge B step 2)
 @implementation NvShader @end
+#ifdef KIRBY_GAME
+static NSString *kirby_scene_vertex_source(NSString *src, NSString *key) {
+    if (!src || !getenv("KIRBY_SCENE_PRESENT") || ![key hasPrefix:@"06c3dcf1ff3c65d2"]) return src;
+    // The game's final scene quad uses GL-style bottom-left UVs; Metal samples
+    // textures from the top-left. The scene fallback supplies an upright image.
+    return [src stringByReplacingOccurrencesOfString:@"out.m_19.y = _43;"
+                                         withString:@"out.m_19.y = 1.0 - _43;"];
+}
+#endif
 /* TOTK: a shader's MSL source is needed only to build derived functions (varying patches, layered vertex, depth-less and
    MetalFX UI fragment variants). The Mac keeps it; iOS keeps only the path and reads it when needed (thousands of sources
    held as strings cost on the order of 100 MB on a device that may use about 4 GB in total). */
 static NSString *sh_src(NvShader *s) {
     if (!s) return nil;
-    if (s->src) return s->src;
-    return s->src_path ? [NSString stringWithContentsOfFile:s->src_path encoding:NSUTF8StringEncoding error:nil] : nil;
+    NSString *src = s->src ? s->src : (s->src_path ? [NSString stringWithContentsOfFile:s->src_path encoding:NSUTF8StringEncoding error:nil] : nil);
+#ifdef KIRBY_GAME
+    return kirby_scene_vertex_source(src, [NSString stringWithUTF8String:s->key]);
+#else
+    return src;
+#endif
 }
 static int sh_has_src(NvShader *s) { return s && (s->src || s->src_path); }
 #include "nvn_pso_skey.h"
@@ -4747,6 +4766,13 @@ static NvShader *shader_load(NSString *pc, int stage) {
         if ([NSFileManager.defaultManager fileExistsAtPath:rt_lib]) { lib = lib_from_file(rt_lib, &e); if (!lib) MLOG("【红】预编译着色器库加载失败 %s：%s（改为现编）", pc.UTF8String, e.localizedDescription.UTF8String); else g_rt_prebuilt++; }
 #endif
         if (!lib) { NSData *raw = [NSData dataWithContentsOfFile:rt_src options:0 error:&e];
+#ifdef KIRBY_GAME
+                    if (raw && [pc hasPrefix:@"06c3dcf1ff3c65d2"] && getenv("KIRBY_SCENE_PRESENT")) {
+                        NSString *original = [[NSString alloc] initWithData:raw encoding:NSUTF8StringEncoding];
+                        NSString *patched = kirby_scene_vertex_source(original, pc);
+                        if (patched) raw = [patched dataUsingEncoding:NSUTF8StringEncoding];
+                    }
+#endif
 #if !TARGET_OS_IPHONE
                     if (raw && (lib = shader_lib_prebuilt(raw))) g_rt_prebuilt++;
 #endif
@@ -6583,6 +6609,15 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         } else if (b->kind == NVN_RB_TEX) {
             int tid = reg < 128 ? (int)(S.tex[nvn_stage][reg] & 0xfffff) : 0;
             void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+#ifdef KIRBY_GAME
+            if (nvn_stage == 1 && reg == 0 && !strncmp(sh->key, "003cb8acb85c3681", 16) &&
+                g_kirby_albedo_debug_frame == atomic_load(&g_cur_frame) &&
+                ((getenv("KIRBY_SCENE_PRESENT") && g_kirby_scene_debug && g_kirby_scene_debug_frame == atomic_load(&g_cur_frame)) ||
+                 (getenv("KIRBY_ALBEDO_PRESENT") && g_kirby_albedo_debug))) {
+                t = getenv("KIRBY_SCENE_PRESENT") && g_kirby_scene_debug_frame == atomic_load(&g_cur_frame) ? g_kirby_scene_debug : g_kirby_albedo_debug;
+                trid = t.gpuResourceID._impl;
+            }
+#endif
             if (nvn_stage == 1 && reg == 0 && !strncmp(sh->key, "0ac9a54938974396", 16) && getenv("DM_NVN_FLASHHDR")) g_flash_hdr_source = t;
             if (t && tid < g_ntreg) use_rec("tex", (uint64_t)g_treg[tid].t.mem, g_treg[tid].t.L.size, tid, &g_treg[tid].t);
             if (t && passdump() && tid < g_ntreg) PD("R %llu st%d ser=%llu mem=%p sz=%llu", g_stat_pass, nvn_stage, g_treg[tid].t.serial, (void *)g_treg[tid].t.mem, (unsigned long long)g_treg[tid].t.L.size);
@@ -9027,9 +9062,81 @@ static int mfxup_draw(NvProg *pr) {
     return 0;
 }
 #include "nvn_cube_group.h"
+#ifdef KIRBY_GAME
+static void kirby_compose_scene(void) {
+    if (g_kirby_scene_debug_frame == atomic_load(&g_cur_frame)) return;
+    id<MTLTexture> a = g_kirby_albedo_debug, sky = g_kirby_sky_debug;
+    if (!a || !sky || a.width != sky.width || a.height != sky.height) return;
+    static id<MTLRenderPipelineState> ps;
+    static id<MTLSamplerState> samp;
+    if (!ps) {
+        static NSString *msl = @"#include <metal_stdlib>\nusing namespace metal;\n"
+            "struct V { float4 p [[position]]; float2 uv; };\n"
+            "vertex V vs(uint id [[vertex_id]]) { float2 uv=float2((id<<1)&2,id&2); V o; o.p=float4(uv*float2(2,-2)+float2(-1,1),0,1); o.uv=uv; return o; }\n"
+            "fragment float4 fs(V in [[stage_in]], texture2d<float> a [[texture(0)]], texture2d<float> sky [[texture(1)]], sampler s [[sampler(0)]]) { float4 c=a.sample(s,in.uv); return dot(abs(c.rgb),float3(1))>0.001 ? c : sky.sample(s,in.uv)*0.35; }\n";
+        NSError *err = nil;
+        id<MTLLibrary> lib = [g_dev newLibraryWithSource:msl options:nil error:&err];
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+        pd.vertexFunction = [lib newFunctionWithName:@"vs"];
+        pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
+        pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+        ps = lib ? [g_dev newRenderPipelineStateWithDescriptor:pd error:&err] : nil;
+        if (!ps) { MLOG("【红】Kirby 场景合成管线失败：%s", err.localizedDescription.UTF8String); return; }
+        MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
+        sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterNearest;
+        sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+        sd.supportArgumentBuffers = YES;
+        samp = [g_dev newSamplerStateWithDescriptor:sd];
+    }
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:a.width height:a.height mipmapped:NO];
+    td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    td.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> out = [g_dev newTextureWithDescriptor:td];
+    MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new];
+    ad.maxTextureBindCount = 2; ad.maxSamplerStateBindCount = 1;
+    id<MTL4ArgumentTable> at = [g_dev newArgumentTableWithDescriptor:ad error:nil];
+    if (!out || !at || !samp) return;
+    rp_end(); blit_close(); rs_sync();
+    res_add(out);
+    MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
+    rp.colorAttachments[0].texture = out;
+    rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    pt_mark(g_cb, 'R', rp);
+    id<MTL4RenderCommandEncoder> en = [g_cb renderCommandEncoderWithDescriptor:rp]; es_reset();
+    if (!en) return;
+    [at setTexture:a.gpuResourceID atIndex:0];
+    [at setTexture:sky.gpuResourceID atIndex:1];
+    [at setSamplerState:samp.gpuResourceID atIndex:0];
+    [en setArgumentTable:at atStages:MTLRenderStageFragment];
+    [en setRenderPipelineState:ps];
+    [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    m4_end(en);
+    g_kirby_scene_debug = out;
+    g_kirby_scene_debug_frame = atomic_load(&g_cur_frame);
+    defer_obj_release(out); defer_obj_release(at);
+    args_dirty_all(); g_pso_dirty = g_dss_dirty = 1;
+}
+#endif
 static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); g_draw_skip[0]++; return; }
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
+#ifdef KIRBY_GAME
+    if (atomic_load(&g_kirby_3d) && (getenv("KIRBY_ALBEDO_PRESENT") || getenv("KIRBY_SCENE_PRESENT")) && R.has_rt && R.rt.n >= 4 &&
+        R.rt.color[0] && R.rt.color[1] && R.rt.color[3] &&
+        R.rt.color[0]->d.format == 0x29 && R.rt.color[1]->d.format == 0x38 &&
+        R.rt.color[1]->d.width >= 1280 && R.rt.color[1]->d.height >= 720) {
+        int kirby_base = 1; const char *kb = getenv("KIRBY_LIT_PRESENT");
+        if (kb && *kb) kirby_base = atoi(kb);
+        if (kirby_base < 0 || kirby_base >= (int)R.rt.n) kirby_base = 1;
+        g_kirby_albedo_debug = tex_mtl(R.rt.color[kirby_base]);
+        g_kirby_sky_debug = tex_mtl(R.rt.color[3]);
+        g_kirby_albedo_debug_frame = atomic_load(&g_cur_frame);
+    }
+    if (atomic_load(&g_kirby_3d) && getenv("KIRBY_SCENE_PRESENT") && pr && pr->sh[1] &&
+        !strncmp(pr->sh[1]->key, "003cb8acb85c3681", 16) &&
+        g_kirby_albedo_debug_frame == atomic_load(&g_cur_frame)) kirby_compose_scene();
+#endif
     if (pr && pr->missing) { g_draw_skip[15]++; return; }   // TOTK (iOS): a stage is not translated yet
     if (g_nupd) upd_guard_draw(pr, di);   // TOTK: before any encoder or texture preparation of this draw
     { int fit = pr ? prog_fit(pr) : 0; if (fit < 0) { g_draw_skip[15]++; return; } if (fit) g_pso_dirty = 1; }
@@ -9779,8 +9886,81 @@ static int copy_t2t_astc(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
     defer_obj_unref(sv); defer_obj_unref(dv); defer_obj_release(pb);   // 本次提交跑完再放（视图不单独驻留，参数块撤驻留） | Release after this submit has finished running (views are not made resident separately; the parameter block is removed from residency)
     return 1;
 }
-// GPU：贴图 → 贴图（原先误列为空操作，选角页每帧 3 次）。等尺寸、不镜像、同格式 → 逐层 blit；其余语义（缩放带过滤、镜像、换格式）blit 表达不了，报红待实现
-// GPU: texture -> texture (previously mislisted as a no-op, 3 times per frame on the character select page). Same size, not mirrored, same format -> blit layer by layer; the other semantics (scaling with filtering, mirroring, format change) cannot be expressed by blit: report a failure, to be implemented
+/* The 2D copy engine can scale colour textures. Kirby uses this to populate
+   its postprocessing pyramid; dropping the copy feeds undefined pixels to
+   the later passes. Render into the destination when a blit cannot resize. */
+static int copy_t2t_scaled(const p_copy_t2t *c, id<MTLTexture> s, id<MTLTexture> d,
+                           unsigned sl, unsigned ss, unsigned dl, unsigned ds) {
+    if (s == d || c->sr.depth > 1 || c->dr.depth > 1 ||
+        c->sr.width <= 0 || c->sr.height <= 0 || c->dr.width <= 0 || c->dr.height <= 0 ||
+        c->sr.xoffset < 0 || c->sr.yoffset < 0 || c->dr.xoffset < 0 || c->dr.yoffset < 0 ||
+        !(d.usage & MTLTextureUsageRenderTarget)) return 0;
+    id<MTLTexture> sv = [s newTextureViewWithPixelFormat:s.pixelFormat textureType:MTLTextureType2D
+                                                 levels:NSMakeRange(sl, 1) slices:NSMakeRange(ss + c->sr.zoffset, 1)];
+    id<MTLTexture> dv = [d newTextureViewWithPixelFormat:d.pixelFormat textureType:MTLTextureType2D
+                                                 levels:NSMakeRange(dl, 1) slices:NSMakeRange(ds + c->dr.zoffset, 1)];
+    if (!sv || !dv || c->sr.xoffset + c->sr.width > (int)sv.width ||
+        c->sr.yoffset + c->sr.height > (int)sv.height ||
+        c->dr.xoffset + c->dr.width > (int)dv.width ||
+        c->dr.yoffset + c->dr.height > (int)dv.height) return 0;
+    static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *pipelines;
+    static id<MTLSamplerState> samplers[2];
+    if (!pipelines) pipelines = [NSMutableDictionary dictionary];
+    id<MTLRenderPipelineState> ps = pipelines[@(dv.pixelFormat)];
+    if (!ps) {
+        static const char *msl =
+            "#include <metal_stdlib>\nusing namespace metal;\n"
+            "struct V { float4 p [[position]]; float2 uv; };\n"
+            "vertex V vs(uint id [[vertex_id]]) { float2 uv=float2((id<<1)&2,id&2); V o; o.p=float4(uv*float2(2,-2)+float2(-1,1),0,1); o.uv=uv; return o; }\n"
+            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float4& rect [[buffer(0)]]) { return t.sample(s,in.uv*rect.zw+rect.xy); }\n";
+        NSError *err = nil;
+        id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(msl) options:nil error:&err];
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+        pd.vertexFunction = [lib newFunctionWithName:@"vs"];
+        pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
+        pd.colorAttachments[0].pixelFormat = dv.pixelFormat;
+        ps = lib ? [g_dev newRenderPipelineStateWithDescriptor:pd error:&err] : nil;
+        if (!ps) { MLOG("【红】NVN 缩放拷贝管线失败：%s", err.localizedDescription.UTF8String); return 0; }
+        pipelines[@(dv.pixelFormat)] = ps;
+    }
+    int linear = !!(c->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT);
+    if (!samplers[linear]) {
+        MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
+        sd.minFilter = sd.magFilter = linear ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+        sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+        sd.supportArgumentBuffers = YES;
+        samplers[linear] = [g_dev newSamplerStateWithDescriptor:sd];
+    }
+    MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new];
+    ad.maxTextureBindCount = 1; ad.maxSamplerStateBindCount = 1; ad.maxBufferBindCount = 1;
+    id<MTL4ArgumentTable> at = [g_dev newArgumentTableWithDescriptor:ad error:nil];
+    float rect[4] = {(float)c->sr.xoffset / sv.width, (float)c->sr.yoffset / sv.height,
+                     (float)c->sr.width / sv.width, (float)c->sr.height / sv.height};
+    id<MTLBuffer> uv = [g_dev newBufferWithBytes:rect length:sizeof rect options:MTLResourceStorageModeShared];
+    if (!samplers[linear] || !at || !uv) return 0;
+    res_add(uv);
+    rp_end(); blit_close(); rs_sync();
+    MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
+    rp.colorAttachments[0].texture = dv;
+    rp.colorAttachments[0].loadAction = c->dr.xoffset == 0 && c->dr.yoffset == 0 &&
+        c->dr.width == (int)dv.width && c->dr.height == (int)dv.height ? MTLLoadActionDontCare : MTLLoadActionLoad;
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    pt_mark(g_cb, 'R', rp);
+    id<MTL4RenderCommandEncoder> en = [g_cb renderCommandEncoderWithDescriptor:rp]; es_reset();
+    if (!en) return 0;
+    [at setTexture:sv.gpuResourceID atIndex:0];
+    [at setSamplerState:samplers[linear].gpuResourceID atIndex:0];
+    [at setAddress:uv.gpuAddress atIndex:0];
+    [en setArgumentTable:at atStages:MTLRenderStageFragment];
+    [en setViewport:(MTLViewport){c->dr.xoffset, c->dr.yoffset, c->dr.width, c->dr.height, 0, 1}];
+    [en setRenderPipelineState:ps];
+    [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    m4_end(en);
+    defer_obj_unref(sv); defer_obj_unref(dv); defer_obj_release(uv); defer_obj_release(at);
+    args_dirty_all(); g_pso_dirty = g_dss_dirty = 1;
+    return 1;
+}
+// GPU：贴图 → 贴图。同尺寸、同格式逐层 blit；2D 缩放用渲染通道；其余暂报红。
 static void copy_t2t(const p_copy_t2t *c) {
     if (c->src) xv_check(c->src->serial, c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, "贴图拷贝源");
     rp_flush();   // 挂起的纯清除通道先落地（零源候选在通道结束时才进集合）；下面 blit() 本来也会结束通道 | Land the pending pure-clear render pass first (zero-source candidates only enter the set when the render pass ends); the blit() below would end the render pass anyway
@@ -9805,6 +9985,10 @@ static void copy_t2t(const p_copy_t2t *c) {
         for (int z = 0; z < nz && ok; z++) ok = copy_t2t_astc(s, d, sl, sz0 + c->sr.zoffset + z, dl, dz0 + c->dr.zoffset + z, c->sr.xoffset, c->sr.yoffset, c->dr.xoffset, c->dr.yoffset, c->sr.width, c->sr.height);
         if (ok) return;
     }
+    if ((c->sr.width != c->dr.width || c->sr.height != c->dr.height) &&
+        !(c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT) &&
+        s.pixelFormat == d.pixelFormat && !s3 && !d3 && nz == 1 && (c->dr.depth ? c->dr.depth : 1) == 1 &&
+        copy_t2t_scaled(c, s, d, sl, sz0, dl, dz0)) return;
     if (c->sr.width != c->dr.width || c->sr.height != c->dr.height || (c->sr.depth ? c->sr.depth : 1) != (c->dr.depth ? c->dr.depth : 1) || (c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT)
         || s.pixelFormat != d.pixelFormat || s3 != d3) {
         RED_ONCE(33, "贴图→贴图拷贝未实现的形态：%dx%dx%d→%dx%dx%d 标志 %#x 格式 %lu→%lu 3D %d→%d", c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth,
@@ -10202,6 +10386,10 @@ void mtl_exec(const uint8_t *p) {
 // ---------- 出图：交换链贴图画到 CAMetalLayer；可选截图 ----------
 // ---------- Present: draw the swapchain texture to the CAMetalLayer; optional screenshot ----------
 static id<MTLRenderPipelineState> g_blit_pso; static MTLPixelFormat g_blit_fmt;
+#if defined(KIRBY_GAME)
+static id<MTLRenderPipelineState> g_blit_pso_bright, g_blit_pso_scene;
+static _Atomic int g_kirby_flip = 0;
+#endif
 static id<MTLSamplerState> g_blit_samp;
 static uint64_t g_present_n;
 uint64_t mtl_present_count(void) { return g_present_n; }   // 实际出图次数（发热归因 DM_HEAT 算出图帧率） | Actual present count (heat attribution DM_HEAT computes the present frame rate)
@@ -10665,7 +10853,9 @@ static void present_pipeline(MTLPixelFormat format) {
             "struct V { float4 p [[position]]; float2 uv; };\n"
             "vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2); V o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n"
             "struct Crop { float4 rect; float4 edge; };\n"
-            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) { return t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw)); }\n";
+            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) { return t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw)); }\n"
+            "fragment float4 fs_bright(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) { float4 p=t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw)); p.rgb=pow(max(p.rgb,float3(0.0)),float3(0.30)); return p; }\n"
+            "fragment float4 fs_scene(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) { float4 p=t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw)); p.rgb=pow(max(p.rgb,float3(0.0)),float3(0.55)); return p; }\n";
         NSError *e = nil;
         id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(src_msl) options:nil error:&e];
         if (!lib) MDIE("出图着色器编译失败 %s", e.localizedDescription.UTF8String);
@@ -10674,6 +10864,14 @@ static void present_pipeline(MTLPixelFormat format) {
         pd.colorAttachments[0].pixelFormat = format;
         g_blit_pso = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
         if (!g_blit_pso) MDIE("出图管线失败 %s", e.localizedDescription.UTF8String);
+#if defined(KIRBY_GAME)
+        pd.fragmentFunction = [lib newFunctionWithName:@"fs_bright"];
+        g_blit_pso_bright = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+        if (!g_blit_pso_bright) MDIE("Kirby 关卡亮度管线失败 %s", e.localizedDescription.UTF8String);
+        pd.fragmentFunction = [lib newFunctionWithName:@"fs_scene"];
+        g_blit_pso_scene = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+        if (!g_blit_pso_scene) MDIE("Kirby 简化场景出图管线失败 %s", e.localizedDescription.UTF8String);
+#endif
         g_blit_fmt = format;
         MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear; sd.supportArgumentBuffers = YES;
         g_blit_samp = [g_dev newSamplerStateWithDescriptor:sd];
@@ -10834,11 +11032,24 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp]; es_reset();
     [en setViewport:vp];
-    [en setRenderPipelineState:g_blit_pso]; [en setFragmentTexture:src atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
+    [en setRenderPipelineState:
+#if defined(KIRBY_GAME)
+        atomic_load(&g_kirby_flip) ? g_blit_pso : (getenv("KIRBY_SCENE_PRESENT") ? g_blit_pso_scene : g_blit_pso_bright)
+#else
+        g_blit_pso
+#endif
+    ]; [en setFragmentTexture:src atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
     float uv[8] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
                    (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
+#if defined(KIRBY_GAME)
+    /* Kirby's menu and 3D stage use opposite render origins. */
+    if (atomic_load(&g_kirby_flip)) { uv[1] = (float)(cy + ch) / src.height; uv[3] = -(float)ch / src.height; }
+#endif
     [en setFragmentBytes:uv length:sizeof uv atIndex:0];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+#if defined(KIRBY_GAME)
+    [en setRenderPipelineState:g_blit_pso];
+#endif
     MTLViewport ovp; float fuv[8];
     if (fps_overlay && fps_overlay_prepare(3, vp, &ovp, fuv)) {
         [en setViewport:ovp]; [en setFragmentTexture:g_fps_tex[3] atIndex:0]; [en setFragmentBytes:fuv length:sizeof fuv atIndex:0];
@@ -10887,10 +11098,22 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     float *uv = g_present_uv[uv_i].contents;
     uv[0] = (float)cx / pic.width; uv[1] = (float)cy / pic.height; uv[2] = (float)cw / pic.width; uv[3] = (float)ch / pic.height;
     uv[4] = (cx + 0.5f) / pic.width; uv[5] = (cy + 0.5f) / pic.height; uv[6] = (cx + cw - 0.5f) / pic.width; uv[7] = (cy + ch - 0.5f) / pic.height;
+#if defined(KIRBY_GAME)
+    if (atomic_load(&g_kirby_flip)) { uv[1] = (float)(cy + ch) / pic.height; uv[3] = -(float)ch / pic.height; }
+#endif
     [args setAddress:g_present_uv[uv_i].gpuAddress atIndex:0];
     [en setArgumentTable:args atStages:MTLRenderStageFragment];
-    [en setViewport:vp]; [en setRenderPipelineState:g_blit_pso];
+    [en setViewport:vp]; [en setRenderPipelineState:
+#if defined(KIRBY_GAME)
+        atomic_load(&g_kirby_flip) ? g_blit_pso : (getenv("KIRBY_SCENE_PRESENT") ? g_blit_pso_scene : g_blit_pso_bright)
+#else
+        g_blit_pso
+#endif
+    ];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+#if defined(KIRBY_GAME)
+    [en setRenderPipelineState:g_blit_pso];
+#endif
     MTLViewport ovp; float fuv[8];
     if (fps_overlay_prepare(uv_i, vp, &ovp, fuv)) {   // argument-table bindings are captured per draw, so rebinding here leaves the game picture's draw intact
         memcpy(g_fps_uv[uv_i].contents, fuv, sizeof fuv);
@@ -11694,6 +11917,14 @@ static int mfx_present_frame(const tex_t *t, double period, int discard) {
     @autoreleasepool { return mfx_present_frame_body(t, period, discard); }
 }
 uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
+#if defined(KIRBY_GAME)
+    /* The game's swapchain image is already upright. The earlier pass-count
+       heuristic flipped menus and left them upside down; keep the present
+       unflipped unless a diagnostic explicitly asks for it. */
+    atomic_store(&g_kirby_flip, getenv("KIRBY_FORCE_FLIP") ? 1 : 0);
+    { static uint64_t last_pass; uint64_t passes = g_stat_pass - last_pass; last_pass = g_stat_pass;
+      atomic_store(&g_kirby_3d, passes >= 20); }
+#endif
     int discard = atomic_load(&g_present_discard), islot = mfx_enabled() && t ? mfx_present_frame(t, period, discard) : -1;
     if (mfx_latch() && !mfx_enabled()) g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0;   // key 2 / flag mfx_interp: the next frame is fully on or off
     if (discard) return 0;   // 票号 0 = 没有待完成的上屏，取交换链贴图处不等 | Ticket number 0 = no pending present; the swapchain texture acquire does not wait

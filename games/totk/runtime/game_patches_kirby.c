@@ -64,26 +64,31 @@ static void kirby_trap_probe(uint64_t x0, uint64_t x1, uint64_t x2, uint64_t x3,
     _exit(72);
 }
 
-/* SDK 4.4's account::CloseUser dispatches through a service object that the
-   host does not implement. The user handle is only closed on the failed path
-   here; skipping the close lets the game continue without an invalid object. */
+/* SDK-local calls bypass the ELF import table. Route them through the same
+   host-stack wrappers used by calls imported from main. */
+static void patch_account_call(Module *m, uint32_t offset, uint32_t expected,
+                               uint32_t stub_offset, const char *symbol) {
+    uint32_t *entry = (uint32_t *)(void *)(m->base + offset);
+    if (*entry != expected) runtime_fail("Kirby account SDK entry changed");
+    void *host = runtime_account_override(symbol);
+    if (!host) runtime_fail("Kirby account host function missing");
+    void *target = runtime_hle_wrap_named(host, symbol);
+    uint32_t *stub = (uint32_t *)(void *)(m->base + m->patch_off + stub_offset);
+    stub[0] = 0x58000050u; /* ldr x16, #8 */
+    stub[1] = 0xD61F0200u; /* br x16 */
+    memcpy(&stub[2], &target, sizeof target);
+    int64_t delta = (int64_t)(m->patch_off + stub_offset) - offset;
+    if ((delta & 3) || delta < -(1ll << 27) || delta >= (1ll << 27))
+        runtime_fail("Kirby account branch out of range");
+    *entry = 0x14000000u | ((uint32_t)(delta >> 2) & 0x3ffffffu);
+    fprintf(stderr, "[kirby] sdk account %s -> host\n", symbol);
+}
 void runtime_kirby_sdk_patches(Module *m) {
     if (strcmp(m->name, "sdk")) return;
-    uint32_t *close_user = (uint32_t *)(void *)(m->base + 0xb3530);
-    if (*close_user == 0xF9400800u) {   /* ldr x0,[x0,#0x10] */
-        *close_user = 0xD65F03C0u;      /* ret */
-        fprintf(stderr, "[kirby] patched sdk account::CloseUser to return\n");
-    }
-    /* The SDK account object is never created because nn::account::Initialize
-       is answered by the host. Return a zero user handle instead of following
-       the null service virtual call. */
-    uint32_t *open_user = (uint32_t *)(void *)(m->base + 0xb3478);
-    if (open_user[0] != 0xA9007C1Fu) {
-        open_user[0] = 0xA9007C1Fu;      /* stp xzr,xzr,[x0] */
-        open_user[1] = 0x2A1F03E0u;      /* mov w0,wzr */
-        open_user[2] = 0xD65F03C0u;      /* ret */
-        fprintf(stderr, "[kirby] patched sdk account::OpenPreselectedUser to return a zero handle (was %08x)\n", open_user[0]);
-    }
+    patch_account_call(m, 0xb3478u, 0xD10103FFu, 0x40u,
+                       "_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE");
+    patch_account_call(m, 0xb3530u, 0xF9400800u, 0x60u,
+                       "_ZN2nn7account9CloseUserERKNS0_10UserHandleE");
     /* AbortImpl can be entered through a function pointer that skips the
        first word; put the probe in the module's patch area and branch to it
        from all three plausible entry points. */

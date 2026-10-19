@@ -36,6 +36,9 @@ static void initialize(void){
 static bool same(const Uid *uid){return uid&&uid->lo==local.lo&&uid->hi==local.hi;}
 static bool valid(const UserHandle *handle){if(!handle||!same(&handle->uid))return false;for(unsigned i=0;i<64;i++)if(tokens[i]&&tokens[i]==handle->token)return true;return false;}
 static unsigned preselected(UserHandle *out){if(!out)runtime_fail("account null user handle");initialize();lock_acquire();for(unsigned i=0;i<64;i++)if(!tokens[i]){tokens[i]=nextToken++;*out=(UserHandle){local,tokens[i]};lock_release();return 1;}lock_release();return 0;}
+/* OpenPreselectedUser returns a Result (zero on success). The similarly named
+   TryOpenPreselectedUser returns a boolean, so they cannot share one ABI. */
+static uint32_t open_preselected(UserHandle *out){return preselected(out)?0:0x7c67;}
 static uint32_t user_id(Uid *out,const UserHandle *handle){lock_acquire();bool ok=out&&valid(handle);if(ok)*out=local;lock_release();return ok?0:0x7c67;}
 static void close_user(const UserHandle *handle){lock_acquire();if(!valid(handle))runtime_fail("invalid local account handle close");for(unsigned i=0;i<64;i++)if(tokens[i]==handle->token){tokens[i]=0;break;}lock_release();}
 static uint32_t existence(unsigned char *out,const Uid *uid){if(!out||!uid)return 0x7c67;initialize();*out=same(uid);return 0;}
@@ -44,7 +47,7 @@ void runtime_account_uid(uint64_t out[2]){initialize();out[0]=local.lo;out[1]=lo
 void *runtime_account_override(const char *name){
  static const struct{const char *name;void *fn;} entries[]={
  {"_ZN2nn7account10InitializeEv",initialize},{"_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE",preselected},
- {"_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE",preselected},
+ {"_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE",open_preselected},
  {"_ZN2nn7account9CloseUserERKNS0_10UserHandleE",close_user},{"_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE",user_id},
  {"_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE",existence},{"_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE",nickname}};
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
