@@ -9131,7 +9131,7 @@ static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
         R.rt.color[0] && R.rt.color[1] && R.rt.color[3] &&
         R.rt.color[0]->d.format == 0x29 && R.rt.color[1]->d.format == 0x38 &&
         R.rt.color[1]->d.width >= 1280 && R.rt.color[1]->d.height >= 720) {
-        int kirby_base = 1; const char *kb = getenv("KIRBY_LIT_PRESENT");
+        int kirby_base = atomic_load(&g_kirby_scene_kind) == 1 ? 0 : 1; const char *kb = getenv("KIRBY_LIT_PRESENT");
         if (kb && *kb) kirby_base = atoi(kb);
         if (kirby_base < 0 || kirby_base >= (int)R.rt.n) kirby_base = 1;
         g_kirby_albedo_debug = tex_mtl(R.rt.color[kirby_base]);
