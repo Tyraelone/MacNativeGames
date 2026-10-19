@@ -322,3 +322,18 @@ MovieOpening / ExecChildSeq / Finished / XBIN4 ...
 - `scan XBIN4` 显示 RomFS 里的模块被加载到 `0x334800000` 一带；`Default.bin` 等大模块和堆上的脚本副本是分开的。
 
 这说明下一步可以沿“找到包含 MovieOpening 的 Mint 模块基址 → 解析模块的类/函数表”走，而不是继续猜 decoder。
+
+### 第八轮：定位到 Seq.bin 的 guest 模块基址
+
+`scandump MovieOpening` 同时完成了扫描和 dump，确认加载后的 `Seq.bin` 模块基址：
+
+```text
+base = 0x3dc520000
++0x3d80  MovieOpening / ExecChildSeq / Finished 字符串表
+```
+
+模块头是完整的 `XBIN4 12 02 00 00 d5 3b 01 00 ...`，大小与 RomFS 里的 `mint/Seq.bin` 一致。
+
+新增 `pokeat <needle> <delta> <hex>`：找到字符串后可直接改 guest 内存。实测把 `MovieOpening` 的长度前缀改成 8、内容改成 `Finished`（一次写 16 字节）后，**场景仍停在 Movie.Scene**。这说明 Mint VM 用的是模块内的函数/状态索引，而不是运行时按这个字符串重新查函数。
+
+下一步应解析模块头 0x30 起的类/函数描述表，找到状态函数索引，而不是继续改字符串。

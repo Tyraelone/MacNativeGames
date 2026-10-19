@@ -269,7 +269,23 @@ static void *input_file(void *arg) {
         } else if (!strncmp(line, "scanr ", 6)) {
             char *e1; uint64_t s0 = strtoull(line + 6, &e1, 0), e0 = strtoull(e1, &e1, 0); while (*e1 == ' ') e1++;
             extern void runtime_kirby_memscan_range(const char *, uint64_t, uint64_t);
+            fprintf(stderr, "[kirby-scan] range %#llx..%#llx needle=%s\n", (unsigned long long)s0, (unsigned long long)e0, e1);
             if (*e1) runtime_kirby_memscan_range(e1, s0, e0);
+        } else if (!strncmp(line, "scandump ", 9)) {
+            char needle[256]; unsigned long long before = 0, after = 0;
+            if (sscanf(line + 9, "%255s %llx %llx", needle, &before, &after) >= 1) {
+                extern void runtime_kirby_scandump(const char *, uint64_t, uint64_t);
+                runtime_kirby_scandump(needle, before, after);
+            }
+        } else if (!strncmp(line, "pokeat ", 7)) {
+            char needle[256], hex[160]; long long delta = 0; unsigned char bytes[64]; size_t n = 0;
+            if (sscanf(line + 7, "%255s %lli %159s", needle, &delta, hex) == 3) {
+                char *h = hex;
+                while (*h && n < sizeof bytes) { unsigned v; if (sscanf(h, "%2x", &v) != 1) break; bytes[n++] = (unsigned char)v; h += 2; }
+                extern void runtime_kirby_pokeat(const char *, int64_t, const uint8_t *, size_t);
+                fprintf(stderr, "[kirby-poke] request %s delta=%lld n=%zu\n", needle, delta, n);
+                runtime_kirby_pokeat(needle, delta, bytes, n);
+            }
         } else if (!strncmp(line, "scanptr ", 8)) {
             char *e1; uint64_t v = strtoull(line + 8, &e1, 0), s0 = 0x300000000ULL, e0 = 0x8000000000ULL;
             if (e1 && *e1) s0 = strtoull(e1, &e1, 0); if (e1 && *e1) e0 = strtoull(e1, NULL, 0);

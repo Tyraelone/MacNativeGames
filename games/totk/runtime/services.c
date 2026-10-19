@@ -280,6 +280,8 @@ void *runtime_override(const char *name) {
 }
 #if defined(KIRBY_GAME)
 #include <string.h>
+void runtime_kirby_memdump(uint64_t addr, size_t len);
+static uint64_t g_scan_before, g_scan_after, g_poke_delta; static uint8_t g_poke[64]; static size_t g_poke_len;
 void runtime_kirby_memscan_range(const char *needle, uint64_t start, uint64_t end) {
     size_t n = strlen(needle);
     if (n < 4) { fprintf(stderr, "[kirby-scan] needle too short\n"); return; }
@@ -303,6 +305,8 @@ void runtime_kirby_memscan_range(const char *needle, uint64_t start, uint64_t en
                         fprintf(stderr, "[kirby-scan] hit %#llx (%s) bytes:", (unsigned long long)hit, needle);
                         for (unsigned k = 0; k < 64 && i + k < got; k++) fprintf(stderr, " %02x", buf[i + k]);
                         fputc('\n', stderr);
+                        if (g_poke_len) { memcpy((void *)(uintptr_t)(hit + g_poke_delta), g_poke, g_poke_len); fprintf(stderr, "[kirby-poke] %#llx <- %zu bytes\n", (unsigned long long)(hit + g_poke_delta), g_poke_len); free(buf); return; }
+                        if (g_scan_after) { free(buf); runtime_kirby_memdump(hit - g_scan_before, g_scan_before + g_scan_after); return; }
                         if (++hits >= 16) { free(buf); return; }
                     }
                 }
@@ -314,6 +318,13 @@ void runtime_kirby_memscan_range(const char *needle, uint64_t start, uint64_t en
     fprintf(stderr, "[kirby-scan] %u hits\n", hits);
 }
 void runtime_kirby_memscan(const char *needle) { runtime_kirby_memscan_range(needle, 0x300000000ULL, 0x8000000000ULL); }
+void runtime_kirby_scandump(const char *needle, uint64_t before, uint64_t after) { g_scan_before = before; g_scan_after = after; runtime_kirby_memscan_range(needle, 0x300000000ULL, 0x8000000000ULL); g_scan_after = 0; }
+void runtime_kirby_pokeat(const char *needle, int64_t delta, const uint8_t *bytes, size_t len) {
+    if (len > sizeof g_poke) { fprintf(stderr, "[kirby-poke] too long\n"); return; }
+    memcpy(g_poke, bytes, len); g_poke_len = len; g_poke_delta = (uint64_t)delta;
+    runtime_kirby_memscan_range(needle, 0x300000000ULL, 0x8000000000ULL);
+    g_poke_len = 0;
+}
 #endif
 #if defined(KIRBY_GAME)
 void runtime_kirby_memdump(uint64_t addr, size_t len) {
