@@ -9908,22 +9908,27 @@ static int copy_t2t_scaled(const p_copy_t2t *c, id<MTLTexture> s, id<MTLTexture>
     static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *pipelines;
     static id<MTLSamplerState> samplers[2];
     if (!pipelines) pipelines = [NSMutableDictionary dictionary];
-    id<MTLRenderPipelineState> ps = pipelines[@(dv.pixelFormat)];
+    int flipv = getenv("KIRBY_COPY_FLIP") != NULL;
+    NSNumber *pkey = @((unsigned)dv.pixelFormat * 2 + (unsigned)flipv);
+    id<MTLRenderPipelineState> ps = pipelines[pkey];
     if (!ps) {
-        static const char *msl =
-            "#include <metal_stdlib>\nusing namespace metal;\n"
-            "struct V { float4 p [[position]]; float2 uv; };\n"
-            "vertex V vs(uint id [[vertex_id]]) { float2 uv=float2((id<<1)&2,id&2); V o; o.p=float4(uv*float2(2,-2)+float2(-1,1),0,1); o.uv=uv; return o; }\n"
-            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float4& rect [[buffer(0)]]) { return t.sample(s,in.uv*rect.zw+rect.xy); }\n";
+        const char *sample = flipv
+            ? "float2 uv=float2(in.uv.x*rect.z+rect.x, 1.0-(rect.y+in.uv.y*rect.w)); return t.sample(s,uv);"
+            : "return t.sample(s,in.uv*rect.zw+rect.xy);";
+        NSString *msl = [NSString stringWithFormat:
+            @"#include <metal_stdlib>\nusing namespace metal;\n"
+             "struct V { float4 p [[position]]; float2 uv; };\n"
+             "vertex V vs(uint id [[vertex_id]]) { float2 uv=float2((id<<1)&2,id&2); V o; o.p=float4(uv*float2(2,-2)+float2(-1,1),0,1); o.uv=uv; return o; }\n"
+             "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float4& rect [[buffer(0)]]) { %s }\n", sample];
         NSError *err = nil;
-        id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(msl) options:nil error:&err];
+        id<MTLLibrary> lib = [g_dev newLibraryWithSource:msl options:nil error:&err];
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
         pd.vertexFunction = [lib newFunctionWithName:@"vs"];
         pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
         pd.colorAttachments[0].pixelFormat = dv.pixelFormat;
         ps = lib ? [g_dev newRenderPipelineStateWithDescriptor:pd error:&err] : nil;
         if (!ps) { MLOG("【红】NVN 缩放拷贝管线失败：%s", err.localizedDescription.UTF8String); return 0; }
-        pipelines[@(dv.pixelFormat)] = ps;
+        pipelines[pkey] = ps;
     }
     int linear = !!(c->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT);
     if (!samplers[linear]) {
