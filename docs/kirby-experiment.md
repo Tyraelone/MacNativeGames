@@ -207,3 +207,19 @@ export KIRBY_MOVIE_FILE="$HERE/Resources/movie-head.nv12"   # 影片前 3 帧，
 ```
 
 因此双击 App 至少能看到这张开场影片画面，而不是纯黑。`Movie.Scene` 仍会在第一帧后触发 Mint 异常，标题画面尚未到达。
+
+### 2026-10-19 第二轮：Movie.Scene 的断言不在取帧之后
+
+这一轮继续拆 `Movie.Scene` 的 abort，结论是它**不是**“等不到视频帧”：
+
+- 视频 stub 已经返回第 0 帧（`stub video frame 0/1385`），并把输出标记为 held。
+- 音频输出补了 `pcm-encoding` / `channel-mask`，不再立即 EOS。
+- 把 SDK abort trap 末尾的 `b .` 改成 `ret`，让断言线程能返回。
+- 但日志里**从未出现 `stub get_output` 或 `stub release_output`**：游戏在 `AcquireOutputBufferIndex` 之后就直接在 `Movie.Scene.initAsync` 断言，根本没走到取帧/释放帧。
+
+因此下一个最小点不是继续调 NV12 拷贝，而是：
+
+1. 让旧 SDK 的 MP4 Extractor 返回真实样本，使 Movie.Scene 的 Mint 状态正常结束；或
+2. 在 Mint 序列/场景创建层跳过 `MovieOpening`。
+
+在这之前，App 只能显示已抓到的第一张开场帧，不能进入标题。
