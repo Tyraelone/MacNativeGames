@@ -10,11 +10,18 @@ Play your own copy of **The Legend of Zelda: Tears of the Kingdom** natively on 
 
 Update history:
 
+October 21: Added an experimental Kirby Star Allies base-game native preview, with guarded 60 FPS pacing, 1/2/3 shortcuts and UI coordinate fixes. See its separate status and developer instructions below.
 October 18: Added 1.4.3 support and shader prewarming before the first play session (about 10 minutes).
 October 17: Added 1.0.0 and 1.1.2 support. First-launch shader prewarming was not available yet, so new scenes could stutter.
 
 
 **Stuttering when you first start playing or enter a new scene is expected while new shaders compile—don't be surprised.** Performance typically improves as the cache warms up.
+
+## Kirby Star Allies native preview
+
+An experimental native port of **Kirby Star Allies**, title ID `01007E3006DDA000`, base version `v0`, is available in [games/kirby](games/kirby/README.md). Local checks cover menus, the first two stage entrances, basic movement, save reload, UI alignment, 60 FPS pacing and picture/interpolation switching. Frame-rate observations are scene-specific; full-game completion, later worlds and movie PCM playback remain unverified or incomplete.
+
+Kirby uses an adapted **external copy** of the host. It is not an option in `build_app.py`; `package_preview.py` packages an already prepared and validated Kirby host. See the [developer build and packaging steps](games/kirby/README.md#开发构建与打包) and [game-data-free tests](games/kirby/README.md#自动测试与验证边界). Game files, keys, Apps, extracted data, saves and caches stay outside this source repository.
 
 ## Audio fix
 
@@ -138,7 +145,7 @@ Language: the game and the launcher's own text (startup screen, shader warm-up p
 - Supports base 1.0.0, or base plus the separate 1.1.2 or 1.4.3 update NSP/NSZ. Other versions, DLC, combined packages, compressed base games (NSZ/XCZ) and personalized tickets remain unsupported. Mac only.
 - No online features, no amiibo.
 - New shaders can cause compilation stutters. Cache reuse reduces these, but does not guarantee stutter-free gameplay.
-- The 38 automated tests cover generated container/update fixtures, relocation formats, work-folder isolation, packaging, desktop migration, shader extraction, first-import cache preservation and 27 native RomFS path cases. GitHub Actions is configured to run the source tests and native path-parser sanitizers without game data or keys. A complete Mac build also passed with a local XCI-derived NSP fixture and generated common ticket. An independent retail base NSP and gameplay from that input have not yet been tested.
+- The 47 automated tests cover generated container/update fixtures, relocation formats, work-folder isolation, packaging, desktop migration, shader extraction, first-import cache preservation, 27 native RomFS path cases, and Kirby language selection, shortcut state, guarded frame pacing, derived-shader orientation and GPU keepalive policy. GitHub Actions is configured to run the source tests and native path-parser sanitizers without game data or keys. A complete Mac build also passed with a local XCI-derived NSP fixture and generated common ticket. An independent retail base NSP and gameplay from that input have not yet been tested.
 
 ## How it works
 
@@ -172,10 +179,17 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license: [THIRD_PAR
 
 更新历史：
 
+10 月 21 日：加入《星之卡比 新星同盟》基础版原生开发预览，包含带原值校验的 60 帧节拍、1/2/3 快捷键和 UI 坐标修复；状态和开发说明见下方独立入口。
 10 月 18 日：支持 1.4.3，并加入首次游玩前的着色器预热（约 10 分钟）。
 10 月 17 日：支持 1.0.0 和 1.1.2；当时尚未加入首次启动着色器预热，进入新场景可能卡顿。
 
 **第一次进入游戏或新场景时，新着色器的编译可能造成卡顿，这是预期现象，不必惊讶。** 随着着色器缓存逐步预热，表现通常会改善。
+
+## 星之卡比 新星同盟原生预览
+
+[games/kirby](games/kirby/README.md) 提供 title ID `01007E3006DDA000`、基础版 `v0` 的实验性原生移植。本机已验证菜单、前两个关卡入口、基础移动、存档读回、UI 对齐、60 帧节拍及画质／补帧切换。帧率记录只对应测试场景；全流程、后续世界和影片 PCM 播放仍待验证或完成。
+
+卡比使用宿主的**项目外适配副本**，尚未接入 `build_app.py`。`package_preview.py` 只负责打包已准备、已验证的卡比宿主，详见[开发构建与打包](games/kirby/README.md#开发构建与打包)及[无需游戏数据的测试](games/kirby/README.md#自动测试与验证边界)。游戏文件、密钥、App、解包数据、存档和缓存均存放在源码项目外。
 
 ## 音频修复
 
@@ -299,7 +313,7 @@ macOS 能识别的手柄（如 DualSense、Xbox 手柄）会映射为 Switch Pro
 - 支持本体 1.0.0，或本体加单独的 1.1.2 / 1.4.3 更新（NSP/NSZ）。其他版本、DLC、合并包、压缩本体（NSZ/XCZ）和个性化票据仍不支持。平台仅限 Mac。
 - 没有联网功能，没有 amiibo。
 - 首次遇到新着色器可能出现编译卡顿，缓存能减少重复编译，但不保证完全没有卡顿。
-- 38 项自动测试覆盖生成的容器 / 更新样本、重定位格式、工作目录隔离、打包、桌面入口迁移、着色器提取、首次导入的缓存保留及 27 个原生 RomFS 路径用例。GitHub Actions 已配置为运行源码测试和路径解析器内存检查，不需要游戏数据或密钥；另使用本地 XCI 构造、附带生成通用票据的 NSP 测试副本完成完整 Mac 打包。尚未验证独立的零售本体 NSP，也未测试从该类输入构建后的实际游玩。
+- 47 项自动测试覆盖生成的容器 / 更新样本、重定位格式、工作目录隔离、打包、桌面入口迁移、着色器提取、首次导入的缓存保留、27 个原生 RomFS 路径用例，以及卡比的语言选择、快捷键状态、带原值保护的帧节拍、派生着色器方向和 GPU 保活策略。GitHub Actions 已配置为运行源码测试和路径解析器内存检查，不需要游戏数据或密钥；另使用本地 XCI 构造、附带生成通用票据的 NSP 测试副本完成完整 Mac 打包。尚未验证独立的零售本体 NSP，也未测试从该类输入构建后的实际游玩。
 
 ## 工作原理
 

@@ -1,6 +1,19 @@
 # 星之卡比 新星同盟（基础版）原生移植实验
 
-目标 NSP 的 title ID 为 `01007E3006DDA000`，内部版本为 0。文件名中的 `4.1.0` 不是 NSP 内的更新版本。移植沿用项目的 ARM64 游戏代码直跑、Horizon 服务接管和 Metal NVN 后端；当前仍是开发预览，不能作为可玩的 App 发布。
+目标 NSP 的 title ID 为 `01007E3006DDA000`，内部版本为 0。文件名中的 `4.1.0` 不是 NSP 内的更新版本。移植沿用项目的 ARM64 游戏代码直跑、Horizon 服务接管和 Metal NVN 后端；当前仍是开发预览，未通过完整游戏验收。
+
+## 当前范围（2026-10-21）
+
+| 功能 | 验证范围与限制 |
+|---|---|
+| 启动、影片画面、菜单、地图 | 已进入故事模式与前两个关卡入口；影片 PCM 音频尚未播放 |
+| 移动、跳跃、存档 | 第一关与第二关做过基础操作，已验证重启读回进度；未完成全流程存档验证 |
+| 基础 60 帧、原生 / MetalFX 2K | 第一关有实机截图与帧耗时记录；其他场景、长时间运行仍需回归 |
+| UI 坐标 | 主菜单、返回世界选择确认框、暂停菜单已验证背景、边框、文字对齐 |
+| MetalFX 补帧 | 四个模式已切换；采用整帧光流、平面深度和零相机运动，遮挡及文字可能重影 |
+| 游戏语言 | 仅选择基础版已有的资源；当前简体中文环境回退英语，尚无中文资源 |
+
+`build_app.py` 目前仍是 TOTK 构建入口。卡比没有从 NSP 到 App 的统一自动化命令；本目录保存适配补丁、SDK 补丁、预览打包器和测试。
 
 ## 已验证的进度
 
@@ -61,5 +74,73 @@
 - `native-preview.patch` 是应用于 `games/totk` **副本**的实验宿主适配。它包含旧版 SDK 启动 ABI、部分 IPC、VI、HID、音频、FFmpeg 影片解码及分段显存池适配；移除了 TOTK 专属游戏补丁，改用带原指令保护的卡比分辨率与内存预算适配。实验逻辑尚未达到发布质量。打包脚本会将构建所用的 Homebrew 动态库和许可文件收进预览 App。
 - `patch_sdk.py` 仅针对已验证的基础版 SDK 重写镜像，替换五个会因缺少 Switch HID 共享内存而中断的读取入口。它返回空状态，用于启动探针，不是完整输入实现。
 - 通用容器提取和带 build ID 保护的模块重写改动保留在原有提取器与 D2R 重写器中。
+
+## 开发构建与打包
+
+需要 Apple silicon Mac、macOS 26 或更高、Xcode 命令行 / Metal 工具、Python 3.14，以及 Homebrew 的 `opus`、`libvpx`、`ffmpeg`。Python 依赖见 [`games/totk/requirements.txt`](../totk/requirements.txt)。游戏基础版、密钥和六份已验证的共享字体由使用者自行提供。
+
+先在项目外建立宿主源码副本。以下命令仅准备源码，`/path/outside-repository` 须替换为真实的项目外路径；此处不解包游戏、不生成验证报告：
+
+```sh
+kirby_repo="$(git rev-parse --show-toplevel)"
+kirby_work="/path/outside-repository/Kirby_build"
+kirby_host="$kirby_work/host"
+mkdir -p "$kirby_host"
+git archive HEAD games/totk | tar -x -C "$kirby_host" --strip-components=2
+git -C "$kirby_host" apply --check -p1 "$kirby_repo/games/kirby/native-preview.patch"
+git -C "$kirby_host" apply -p1 "$kirby_repo/games/kirby/native-preview.patch"
+```
+
+宿主还须有下列来自自己游戏数据的已验证输入。这一阶段仍是开发者工作流，不应将已有探针报告复制到不同版本上：
+
+| 宿主相对路径 | 内容 |
+|---|---|
+| `extracted/v0/exefs`、`extracted/v0/elf` | 完整性验证后的基础版代码、各模块 ELF inventory |
+| `rewritten/v0` | 三个模块的 `.patched.bin` 和 `.fixups.tsv` |
+| `extracted/v0/romfs` | 验证后的 `romfs.bin`、`runtime-index.bin`、`index.json` |
+| `extracted/firmware/shared-fonts` | 六份 BFTTF 文件和通过校验的 `manifest.json` |
+| `analysis/phase12-validation.json` | 模块验证及探针产生的 `status: probe`、`rom_version: v0` 与各重写模块 SHA-256 |
+| `build/shader-service`、`build/spirv-cross` | 原生着色器翻译服务与 SPIRV-Cross 工具 |
+
+通用 ExeFS 提取器新增 `--title-id 01007E3006DDA000`；RomFS 提取器继续使用该 manifest 中的 title ID。默认值及旧 manifest 的回退仍为 TOTK。重写器的 SDK 跳转表按卡比模块 build ID 和原始指令核对，`patch_sdk.py` 另对已知 SDK 重写镜像做 SHA-256 保护，原地修改时仅接受未打过该补丁的镜像。SDK 补丁后的哈希也必须进入最终验证报告。
+
+完成这些准备后，创建外部虚拟环境，再生成运行时表、编译和打包：
+
+```sh
+python3.14 -m venv "$kirby_work/.venv"
+"$kirby_work/.venv/bin/python" -m pip install -r "$kirby_host/requirements.txt"
+"$kirby_work/.venv/bin/python" "$kirby_host/scripts/prepare_runtime.py"
+make -C "$kirby_host" PY="$kirby_work/.venv/bin/python" build/totk-native
+"$kirby_work/.venv/bin/python" "$kirby_repo/games/kirby/package_preview.py" \
+  --host "$kirby_host" --output "$kirby_work/apps/Kirby Native Preview.app"
+codesign --verify --deep --strict "$kirby_work/apps/Kirby Native Preview.app"
+```
+
+打包器要求输出为不存在的新 `.app` 路径，并将 Homebrew 动态库及许可文件收入 App；它不会下载游戏文件或创建探针报告。替换已有 App 前先退出游戏；保留用户数据目录即可复用进度和缓存。
+
+## 自动测试与验证边界
+
+在源码根目录运行，虚拟环境及原生测试可执行文件均放在项目外：
+
+```sh
+python3.14 -m venv /path/outside-repository/kirby-tests-venv
+/path/outside-repository/kirby-tests-venv/bin/python -m pip install -r games/totk/requirements.txt
+PYTHONDONTWRITEBYTECODE=1 /path/outside-repository/kirby-tests-venv/bin/python \
+  -m unittest discover -s tests -v
+cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  tests/test_romfs_paths.c -o /path/outside-repository/test-romfs-paths
+/path/outside-repository/test-romfs-paths
+```
+
+2026-10-21 本地全套 47 项通过；其中卡比的 8 项测试验证打包语言回退、基础节拍表保护、快捷键状态、派生着色器转换和保活策略。它们从实际适配补丁提取代码编译运行，或读取生成的小型资源索引，不需要游戏、密钥、存档或 GPU 渲染；原生代码测试需要 macOS / clang。
+
+外部宿主另运行过 `TOTK_HEADLESS=1 KIRBY_PREVIEW=1 build/totk-native /path/to/rewritten/v0 probe-gfx`，含 108 个出图节拍用例。它验证宿主策略，不替代游戏实测。菜单、关卡、UI、60 帧和画质切换的实机证据见前文；GitHub 源码 CI 不执行个人游戏文件的完整构建或全流程游玩。
+
+## 数据与证据位置
+
+- 正常预览的数据根目录为 `~/Library/Application Support/MacNativeGames/Kirby/preview`，包含 `profile`、`proof`、`slot`、`shader-cache` 和追加写入的 `latest.log`。
+- 本地隔离测试使用同一 Kirby 用户数据目录下的 `tests/movie-path`；测试存档不得覆盖正常预览存档。
+- 本次开发宿主、构建和证据位于项目外的 `~/Downloads/Kirby_build`，文中的 `analysis/...` 相对此处的 `host`。这些本地截图和日志不随 Git 仓库发布。
+- 本机长期产物约定放在 `/Volumes/mac-APFS/MacNativeGames-artifacts`：App 使用 `apps`，开发缓存使用 `development`。卷可用时使用该外部位置；源码内不保存 App、解包数据或缓存，也不放指回这些目录的链接。
 
 实验宿主、解包内容、编译结果和日志必须存放在项目目录外。现有本机证据位于 `~/Downloads/Kirby_build` 和 `~/Library/Application Support/MacNativeGames/Kirby/tests`。实验补丁可在 `games/totk` 的外部副本根目录执行 `git apply --check -p1 /绝对路径/games/kirby/native-preview.patch` 进行上下文检查；不要直接应用到 TOTK 正式源码。
