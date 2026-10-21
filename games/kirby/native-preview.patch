@@ -1341,7 +1341,7 @@
  #if !TARGET_OS_IPHONE
                      if (raw && (lib = shader_lib_prebuilt(raw))) g_rt_prebuilt++;
  #endif
-@@ -6544,6 +6573,37 @@
+@@ -6544,6 +6573,38 @@
              if (ren) { gpu = ren; if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) RED_ONCE(58, "UI 矩阵修补读的是内存，跳过了含内联更新的 uniform 副本"); }
              else if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) { uint64_t pg = ui_mat_patch(u, mb, mo); if (pg) gpu = pg; }
              else { const usnap_t *sc = usnap_find(u->addr, u->size ? u->size : 1); if (sc) gpu = sc->gpu + (u->addr - sc->lo); }   // TOTK: contents as of the submit call
@@ -1350,13 +1350,13 @@
 +               after uniform snapshots have selected the actual GPU allocation.
 +               Match the movie vertex shader and both NV12 planes; shader-cache
 +               fragment keys can differ even when the translated MSL is equal. */
-+            if (getenv("KIRBY_PREVIEW") && nvn_stage == 1 && reg == 0 && u->size == 64) {
++            if (nvn_stage == 1 && reg == 0 && u->size == 64) {
 +                NvProg *movie = S.prog ? prog_get(S.prog) : nil;
-+                const treg_t *y = bound_tex(S.tex[1][0]), *uv = bound_tex(S.tex[1][1]);
-+                const uint8_t *actual = bound_uniform_bytes(gpu, 64, (__bridge id<MTLBuffer>)mb);
-+                static const uint8_t zero[64];
-+                if (movie && movie->sh[0] && !strncmp(movie->sh[0]->key, "0f97533a854839fe", 16)
-+                    && y && y->t.d.format == 1 && y->t.d.width == 1920 && y->t.d.height == 1080
++                if (movie && movie->sh[0] && !strncmp(movie->sh[0]->key, "0f97533a854839fe", 16) && getenv("KIRBY_PREVIEW")) {
++                    const treg_t *y = bound_tex(S.tex[1][0]), *uv = bound_tex(S.tex[1][1]);
++                    const uint8_t *actual = bound_uniform_bytes(gpu, 64, (__bridge id<MTLBuffer>)mb);
++                    static const uint8_t zero[64];
++                    if (y && y->t.d.format == 1 && y->t.d.width == 1920 && y->t.d.height == 1080
 +                    && uv && uv->t.d.format == 13 && uv->t.d.width == 960 && uv->t.d.height == 540
 +                    && actual && !memcmp(actual, zero, sizeof zero)) {
 +                    static id<MTLBuffer> matrix;
@@ -1374,6 +1374,7 @@
 +                    }
 +                    gpu = matrix.gpuAddress;
 +                    USE(matrix, MTLResourceUsageRead);
++                    }
 +                }
 +            }
              if (bl) {
@@ -1389,7 +1390,7 @@
      if (!fs) return 0;
 +    /* The final copy has several fragment variants. Match its fixed quad
 +       vertex shader and an actual registered swapchain target, not one FS hash. */
-+    if (getenv("KIRBY_PREVIEW") && pr->sh[0] && !strncmp(pr->sh[0]->key,"06c3dcf1ff3c65d2",16) &&
++    if (pr->sh[0] && !strncmp(pr->sh[0]->key,"06c3dcf1ff3c65d2",16) && getenv("KIRBY_PREVIEW") &&
 +        R.rt.n==1 && R.rt.color[0] && xv_present(R.rt.color[0]->serial)) {
 +        int tid=(int)(S.tex[1][0]&0xfffff);
 +        id<MTLTexture> src=tid>0?(__bridge id<MTLTexture>)tex_fast(tid):nil;
