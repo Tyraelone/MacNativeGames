@@ -198,6 +198,26 @@ class Containers(unittest.TestCase):
             _, result = self.extract(game, success=False)
             self.assertIn('Expected Tears of the Kingdom base game', result.stderr)
 
+    def test_other_base_title_requires_explicit_title_id_for_both_extractors(self):
+        kirby = 0x01007E3006DDA000
+        game = self.path / 'kirby.nsp'
+        game.write_bytes(partition([('program.nca', nca(title=kirby)),
+                                    ('base.cnmt.nca', nca(title=kirby, content=1)),
+                                    ('control.nca', nca(title=kirby, content=2))]))
+        out, rejected = self.extract(game, success=False)
+        self.assertIn('Expected base game metadata', rejected.stderr)
+        result = subprocess.run([sys.executable, SCRIPTS / 'extract_exefs.py', game,
+                                 '--keys', self.keys, '--title-id', f'{kirby:016X}',
+                                 '--output', out], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((out / 'main').read_bytes(), b'synthetic main')
+        romout = out.parent / 'romfs'
+        result = subprocess.run([sys.executable, SCRIPTS / 'extract_romfs.py',
+                                 '--keys', self.keys, '--manifest', out.parent / 'extraction-manifest.json',
+                                 '--output', romout], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((romout / 'romfs.bin').read_bytes(), romfs())
+
     def test_update_metadata_with_base_program_id(self):
         for metadata in ([('update.cnmt.nca', nca(title=TITLE + 0x800, content=1))],
                          [('base.cnmt.nca', nca(content=1)), ('dlc.cnmt.nca', nca(title=TITLE + 0x1001, content=1))]):
