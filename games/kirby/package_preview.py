@@ -3,6 +3,8 @@
 
 import argparse
 import json
+import os
+import plistlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -74,6 +76,79 @@ def bundle_brew_libraries(binary: Path, contents: Path) -> None:
         subprocess.run(["codesign", "--force", "--sign", "-", str(artifact)], check=True, capture_output=True)
 
 
+LANGUAGE_RESOURCES = {
+    "ja": "JP_Japanese", "en-US": "US_English", "en-GB": "EU_English",
+    "fr": "EU_French", "fr-CA": "US_French", "de": "EU_German",
+    "it": "EU_Italian", "es": "EU_Spanish", "es-419": "US_Spanish",
+    "nl": "EU_Dutch",
+}
+
+
+def mac_languages() -> list[str]:
+    try:
+        data = subprocess.check_output(["defaults", "export", "-g", "-"], stderr=subprocess.DEVNULL)
+        return plistlib.loads(data).get("AppleLanguages", [])
+    except (OSError, subprocess.CalledProcessError, plistlib.InvalidFileException):
+        return []
+
+
+def select_language(host: Path, *, env=None, preferences=None) -> str:
+    """Prefer build locale, then macOS preferences; select only installed resources."""
+    env = os.environ if env is None else env
+    preferences = mac_languages() if preferences is None else preferences
+    index = json.loads((host / "extracted/v0/romfs/index.json").read_text())
+    available = {entry["path"].split("/")[2] for entry in index["files"]
+                 if entry["path"].startswith("msg/Eclair/") and len(entry["path"].split("/")) > 3}
+    locale = next((env[key] for key in ("LC_ALL", "LC_MESSAGES", "LANG") if env.get(key)), "")
+    candidates = [env.get("TOTK_LANG", ""), locale, *preferences, "en-US", "en-GB", "ja"]
+    for candidate in candidates:
+        tag = candidate.split(".")[0].split("@")[0].replace("_", "-").lower()
+        if not tag or tag in ("c", "posix"):
+            continue
+        exact = next((code for code in LANGUAGE_RESOURCES if code.lower() == tag), None)
+        base = tag.split("-")[0]
+        regional = {"en": "en-GB" if tag in ("en-gb", "en-ie", "en-au", "en-nz") else "en-US",
+                    "fr": "fr-CA" if tag == "fr-ca" else "fr",
+                    "es": "es-419" if tag not in ("es", "es-es") else "es"}.get(base, base)
+        for code in dict.fromkeys((exact, regional, base)):
+            if code in LANGUAGE_RESOURCES and LANGUAGE_RESOURCES[code] in available:
+                return code
+    raise ValueError("no supported Kirby message language found in RomFS")
+
+
+def launcher_source(language: str) -> str:
+    if language not in LANGUAGE_RESOURCES:
+        raise ValueError("unsupported packaged game language")
+    return '''#!/bin/zsh
+set -eu
+game="${0:A:h:h}/Resources/game"
+data="$HOME/Library/Application Support/MacNativeGames/Kirby/preview"
+mkdir -p "$data/profile" "$data/proof" "$data/slot" "$data/shader-cache"
+export TOTK_ROMFS="$game/extracted/v0/romfs"
+export TOTK_ROMFS_PATCHES=0
+export TOTK_SHARED_FONTS="$game/extracted/firmware/shared-fonts"
+export TOTK_PROFILE_DIR="$data/profile"
+export TOTK_ROMFS_PROOF_DIR="$data/proof"
+export TOTK_GAME_SLOT_DIR="$data/slot"
+export TOTK_SHADER_CACHE="$data/shader-cache"
+export TOTK_SHADER_SEED=off
+export TOTK_GPU_ALLOW_SUBMIT=1
+export KIRBY_PREVIEW=1
+export DM_PRESENT_INTERVAL="${DM_PRESENT_INTERVAL:-display}"
+export TOTK_LANG="${TOTK_LANG:-@LANGUAGE@}"
+export KIRBY_VERTEX_Y_FLIP=1
+export TOTK_GPU_WINDING_FLIP=1
+export KIRBY_PRESENT_FLIP_Y=1
+export TOTK_FPS_OVERLAY=1
+export TOTK_SHADER_OVERLAY=1
+export TOTK_LOAD_OVERLAY=1
+export TOTK_SLOT_OWNER=kirby-preview
+export TOTK_SLOT_PURPOSE='Kirby native preview'
+cd "$game"
+exec "$game/build/totk-native" "$game/rewritten/v0" boot >> "$data/latest.log" 2>&1
+'''.replace("@LANGUAGE@", language)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", type=Path, required=True, help="external patched and built host root")
@@ -89,6 +164,7 @@ def main() -> None:
     if report.get("status") != "probe" or report.get("rom_version") != "v0":
         raise ValueError("host is not a validated base-version probe")
 
+    language = select_language(host)
     game = app / "Contents/Resources/game"
     contents = app / "Contents"
     macos = contents / "MacOS"
@@ -130,35 +206,10 @@ def main() -> None:
 </dict></plist>
 ''')
     launcher = macos / "KirbyPreview"
-    launcher.write_text('''#!/bin/zsh
-set -eu
-game="${0:A:h:h}/Resources/game"
-data="$HOME/Library/Application Support/MacNativeGames/Kirby/preview"
-mkdir -p "$data/profile" "$data/proof" "$data/slot" "$data/shader-cache"
-export TOTK_ROMFS="$game/extracted/v0/romfs"
-export TOTK_ROMFS_PATCHES=0
-export TOTK_SHARED_FONTS="$game/extracted/firmware/shared-fonts"
-export TOTK_PROFILE_DIR="$data/profile"
-export TOTK_ROMFS_PROOF_DIR="$data/proof"
-export TOTK_GAME_SLOT_DIR="$data/slot"
-export TOTK_SHADER_CACHE="$data/shader-cache"
-export TOTK_SHADER_SEED=off
-export TOTK_GPU_ALLOW_SUBMIT=1
-export KIRBY_PREVIEW=1
-export KIRBY_VERTEX_Y_FLIP=1
-export TOTK_GPU_WINDING_FLIP=1
-export KIRBY_PRESENT_FLIP_Y=1
-export TOTK_FPS_OVERLAY=1
-export TOTK_SHADER_OVERLAY=1
-export TOTK_LOAD_OVERLAY=1
-export TOTK_SLOT_OWNER=kirby-preview
-export TOTK_SLOT_PURPOSE='Kirby native preview'
-cd "$game"
-exec "$game/build/totk-native" "$game/rewritten/v0" boot >> "$data/latest.log" 2>&1
-''')
+    launcher.write_text(launcher_source(language))
     launcher.chmod(0o755)
     subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(app)], check=True)
-    print(app)
+    print(f"{app} (game language: {language}; base pacing: display refresh)")
 
 
 if __name__ == "__main__":

@@ -27,6 +27,13 @@
 - `3`：画质依次切换为 MetalFX 2K、原生 2K、关闭。MetalFX 从放大前的场景纹理生成 2560×1440；原生模式由游戏线程重建渲染目标。已验证第一关的 G-buffer、深度和主颜色均为 2560×1440；其他场景仍需逐一回归。
 - 测试数据位于 `~/Library/Application Support/MacNativeGames/Kirby/tests/movie-path`，与预览 App 默认的 `Kirby/preview` 数据目录隔离。
 
+## 打包语言和基础帧率
+
+- 打包时按 `TOTK_LANG`、有效的 `LC_ALL` / `LC_MESSAGES` / `LANG`、macOS `AppleLanguages` 的顺序选择语言；`C` / `POSIX` 不是游戏语言。仅选择 RomFS 中确实存在的消息资源，随后回退到英语、日语。运行时可用 `TOTK_LANG` 覆盖打包选择。
+- 当前基础版的 `msg/Eclair` 包含日语、美式 / 英式英语、欧洲 / 加拿大法语、德语、意大利语、欧洲 / 拉美西班牙语及荷兰语；未找到中文消息资源。简体中文打包环境因此选择 `en-US`，不会将文件名中的“中文”当作资源证据。
+- 游戏内部帧节拍表位于基础版 main+`0x39a48c`，按 60 Hz 计拍；关卡原本使用第二项“两拍一帧”。启动补丁校验完整 `{1,2,3,4,5,6}` 原表后，仅把第二项改成一拍，解除基础 30 帧限制、以游戏 60 Hz 节拍运行；经过时间的更新计数由游戏原有逻辑处理。`2` 主动选择的 30+30 档仍保留。启动器同时默认 `DM_PRESENT_INTERVAL=display`，不再额外等待游戏请求的多刷新出图间隔。CPU / GPU 负载仍决定实际帧率，未对 60 Hz 以上的游戏模拟做适配。
+- 实机采样 `analysis/kirby-frame-limit-sample.txt` 定位休眠路径 main+`0x55dc`，`analysis/frame-pacer-disassembly.txt` 记录调用路径；修正前第一关整帧约 33.33 ms / GPU 7 ms，修正后约 16.67 ms，截图 `analysis/frame-pacer-probe-move.jpg` 显示 60 FPS。相同 400 毫秒移动输入在 60 FPS 和 30+30 下均约 110 像素（1000 像素宽截图），未见倍速；这不是全流程速度验证。正式重编译并签名的 App 重新启动后，英语第一关再次显示 60 FPS，证据 `analysis/final-build-english-60fps.jpg`；`analysis/final-build-language-pacing.log` 保存最终运行节选。
+
 ## 快捷键适配与验证
 
 - 提示开关与初始隐藏状态统一；启动器启用各提示组件，再由 `1` 统一控制可见性。

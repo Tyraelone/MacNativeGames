@@ -77,3 +77,30 @@ int main(void) {
                             '-framework', 'CoreFoundation', '-o', str(work / 'case')], check=True)
             env = {**os.environ, 'KIRBY_PREVIEW': '1', 'TOTK_FPS_OVERLAY': '1'}
             subprocess.run([str(work / 'case')], env=env, check=True)
+
+    def test_frame_pacing_patch_preserves_other_rates_and_checks_originals(self):
+        with tempfile.TemporaryDirectory(prefix='kirby-pacer-') as tmp:
+            work = Path(tmp)
+            (work / 'runtime').mkdir()
+            for name in ('game_patches.c', 'game_patches.h', 'runtime.h'):
+                shutil.copy2(ROOT / 'games/totk/runtime' / name, work / 'runtime' / name)
+            subprocess.run(['git', 'apply', '--include=runtime/game_patches.c',
+                            str(ROOT / 'games/kirby/native-preview.patch')], cwd=work, check=True)
+            (work / 'case.c').write_text(r'''
+#include "runtime/game_patches.c"
+#include <assert.h>
+#include <stdlib.h>
+void dm_gfx_set_flag(const char *name,int value){(void)name;(void)value;}
+_Noreturn void runtime_fail(const char *message){(void)message;exit(73);}
+int main(int argc,char **argv) {
+    (void)argv;
+    uint32_t ticks[]={1,2,3,4,5,6};
+    if(argc>1)ticks[1]=7;
+    frame_pacing_patch(ticks);
+    assert(ticks[0]==1&&ticks[1]==1&&ticks[2]==3&&ticks[3]==4&&ticks[4]==5&&ticks[5]==6);
+}
+''')
+            subprocess.run(['clang', '-std=c11', '-Wall', '-Wextra', '-Werror',
+                            str(work / 'case.c'), '-o', str(work / 'case')], check=True)
+            subprocess.run([str(work / 'case')], check=True)
+            self.assertEqual(subprocess.run([str(work / 'case'), 'bad-build']).returncode, 73)

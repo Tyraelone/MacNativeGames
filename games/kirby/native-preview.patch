@@ -338,7 +338,7 @@
      memset(output, 0, out_size);
 --- a/runtime/game_patches.c
 +++ b/runtime/game_patches.c
-@@ -1,408 +1,103 @@
+@@ -1,408 +1,112 @@
 +/* Kirby Star Allies base v0, build 059dd87bede7c09ccf9bcb9fe528fa90.
 + * Keep the logical 1920x1080 UI coordinates. Allocate 2560x1440 capacity at
 + * boot. GlbMemPool-Texture grows 320 -> 576 MiB and its System parent
@@ -493,6 +493,13 @@
 +    if(d<-(1<<20)||d>=(1<<20))runtime_fail("Kirby output data range");
 +    uint32_t v=(uint32_t)d&0x1fffff;return 0x90000000|((v&3)<<29)|((v>>2)<<5)|reg;
 +}
++/* The game uses these 60 Hz tick counts both for its sleep deadline and
++ * simulation scheduling. Reduce only the 30 fps entry to one tick; elapsed
++ * tick accounting still catches up when a user selects 30+30 interpolation. */
++static void frame_pacing_patch(uint32_t *ticks) {
++    for(unsigned i=0;i<6;i++)if(ticks[i]!=i+1)runtime_fail("Kirby frame pacing table mismatch");
++    ticks[1]=1;
++}
 +void runtime_game_patches(Module *m) {
 +    static const struct {uint64_t off;uint32_t old,word;} sites[]={
 +    {0x6c688, 0x52808706, 0x5280b406},
@@ -567,6 +574,8 @@
 -    fprintf(stderr,"[totk] real-time frame step: %zu verified instructions; initial 16.67 ms, sampled at each present\n",
 -            sizeof sites / sizeof *sites);
 +    for(unsigned i=0;i<12;i++)if(m->base[stub+i])runtime_fail("Kirby output veneer padding not empty");
++    frame_pacing_patch((void *)(m->base+0x39a48c));
++    fprintf(stderr,"[kirby] base frame pacing: 30 fps entry changed to 60 Hz single-tick scheduling\n");
 +    uint32_t veneer[]={adrp(8,stub,data),0xf9400108,branch(stub+8,0x171ed4)};
 +    memcpy(m->base+stub,veneer,sizeof veneer);
 +    word=branch(0x171ed0,stub);memcpy(m->base+0x171ed0,&word,4);
