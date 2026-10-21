@@ -1265,7 +1265,39 @@
  // ---------- 状态对象：就地打包（nvn_obj.h） ----------
 --- a/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m
 +++ b/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m
-@@ -4330,7 +4330,7 @@
+@@ -454,9 +454,16 @@
+ static _Atomic int g_ka_target_us = 1000;
+ static _Atomic uint64_t g_ka_n, g_ka_us, g_ka_max_us;   // spin kernels completed, their summed / longest GPU time (us)
+ void mtl_keepalive_stats(uint64_t v[3]) { v[0] = atomic_load(&g_ka_n); v[1] = atomic_load(&g_ka_us); v[2] = atomic_exchange(&g_ka_max_us, 0); }
++/* Kirby's base/MetalFX-spatial modes meet 60 Hz without spin work. Preserve
++   clock support for native 2K and interpolation; an explicit env value keeps
++   the original opt-in/out behaviour for comparisons and other titles. */
++static int keepalive_needed(int kirby_auto, int interpolation, int native_2k) {
++    return !kirby_auto || interpolation || native_2k;
++}
+ static void keepalive_start(void) {
+     static int started; const char *e = getenv("TOTK_GPU_KEEPALIVE");
+     if (started || (e && !atoi(e)) || nogpu() || getenv("TOTK_HEADLESS")) return; started = 1;   // not in standalone probes
++    int kirby_auto = getenv("KIRBY_PREVIEW") && !e;
+     NSError *err = nil;
+     id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void keep(device float *a [[buffer(0)]], constant uint &n [[buffer(1)]], uint i [[thread_position_in_grid]]) { float x = a[i]; for (uint j = 0; j < n; j++) x = fma(x, 1.0000001f, 0.5f); a[i] = x; }\n" options:nil error:&err];
+     id<MTLComputePipelineState> ps = lib ? [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"keep"] error:&err] : nil;
+@@ -467,7 +474,14 @@
+     g_ka_idle = dispatch_semaphore_create(0);
+     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+         __block uint32_t n = 40000; dispatch_semaphore_t sem = dispatch_semaphore_create(1);   // ~1 ms on the M4 at full clock
++        int was_needed = -1;
+         for (;;) @autoreleasepool {
++            int needed = keepalive_needed(kirby_auto, mfx_enabled(), atomic_load(&g_pic_big));
++            if (kirby_auto && needed != was_needed) {
++                MLOG("[kirby] GPU keepalive: %s (native 2K / interpolation only)", needed ? "active" : "idle");
++                was_needed = needed;
++            }
++            if (!needed) { usleep(10000); continue; }
+             int target_us = atomic_load(&g_ka_target_us);
+             if (!target_us) { usleep(2000); continue; }
+             uint64_t last = atomic_load(&g_last_sub_ns);
+@@ -4330,7 +4344,7 @@
      { void td_note(id pd, NSUInteger nc); td_note(pd, (NSUInteger)R.rt.n);
        void ts_note(id pd, NSUInteger nc); ts_note(pd, (NSUInteger)R.rt.n); }
      ser_gate();
@@ -1274,23 +1306,42 @@
      g_enc = enc_r_begin(pd);
      args_dirty_all();
      g_stat_pass++;
-@@ -4741,6 +4741,15 @@
+@@ -4435,10 +4449,21 @@
+ /* TOTK: a shader's MSL source is needed only to build derived functions (varying patches, layered vertex, depth-less and
+    MetalFX UI fragment variants). The Mac keeps it; iOS keeps only the path and reads it when needed (thousands of sources
+    held as strings cost on the order of 100 MB on a device that may use about 4 GB in total). */
++/* Every compile path must use the same framebuffer orientation. Derived vertex
++   functions (missing varyings/layers) reread MSL, bypassing shader_load's library. */
++static NSString *kirby_shader_source(NSString *src, int stage) {
++    if (!src || stage != 0 || !getenv("KIRBY_VERTEX_Y_FLIP")) return src;
++    NSString *flip = @"    out.gl_Position.y = -out.gl_Position.y;";
++    if ([src containsString:flip]) return src;
++    if ([src containsString:@"out.gl_Position"] && [src containsString:@"    return out;"])
++        return [src stringByReplacingOccurrencesOfString:@"    return out;"
++            withString:[flip stringByAppendingString:@"\n    return out;"]];
++    return src;
++}
+ static NSString *sh_src(NvShader *s) {
+     if (!s) return nil;
+-    if (s->src) return s->src;
+-    return s->src_path ? [NSString stringWithContentsOfFile:s->src_path encoding:NSUTF8StringEncoding error:nil] : nil;
++    NSString *src = s->src ?: (s->src_path ? [NSString stringWithContentsOfFile:s->src_path encoding:NSUTF8StringEncoding error:nil] : nil);
++    return kirby_shader_source(src, s->stage);
+ }
+ static int sh_has_src(NvShader *s) { return s && (s->src || s->src_path); }
+ #include "nvn_pso_skey.h"
+@@ -4741,6 +4766,10 @@
          if ([NSFileManager.defaultManager fileExistsAtPath:rt_lib]) { lib = lib_from_file(rt_lib, &e); if (!lib) MLOG("【红】预编译着色器库加载失败 %s：%s（改为现编）", pc.UTF8String, e.localizedDescription.UTF8String); else g_rt_prebuilt++; }
  #endif
          if (!lib) { NSData *raw = [NSData dataWithContentsOfFile:rt_src options:0 error:&e];
-+                    // Diagnostic: test NVN's lower-left framebuffer coordinates at every
-+                    // vertex output, rather than flipping only the final presentation.
-+                    if (stage == 0 && getenv("KIRBY_VERTEX_Y_FLIP")) {
-+                        NSString *probe = raw ? [[NSString alloc] initWithData:raw encoding:NSUTF8StringEncoding] : nil;
-+                        if ([probe containsString:@"out.gl_Position"] && [probe containsString:@"    return out;"]) {
-+                            probe = [probe stringByReplacingOccurrencesOfString:@"    return out;" withString:@"    out.gl_Position.y = -out.gl_Position.y;\n    return out;"];
-+                            raw = [probe dataUsingEncoding:NSUTF8StringEncoding];
-+                        }
++                    if (raw && stage == 0) {
++                        NSString *source = [[NSString alloc] initWithData:raw encoding:NSUTF8StringEncoding];
++                        raw = [kirby_shader_source(source, stage) dataUsingEncoding:NSUTF8StringEncoding];
 +                    }
  #if !TARGET_OS_IPHONE
                      if (raw && (lib = shader_lib_prebuilt(raw))) g_rt_prebuilt++;
  #endif
-@@ -6544,6 +6553,37 @@
+@@ -6544,6 +6573,37 @@
              if (ren) { gpu = ren; if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) RED_ONCE(58, "UI 矩阵修补读的是内存，跳过了含内联更新的 uniform 副本"); }
              else if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) { uint64_t pg = ui_mat_patch(u, mb, mo); if (pg) gpu = pg; }
              else { const usnap_t *sc = usnap_find(u->addr, u->size ? u->size : 1); if (sc) gpu = sc->gpu + (u->addr - sc->lo); }   // TOTK: contents as of the submit call
@@ -1328,7 +1379,7 @@
              if (bl) {
                  PD("B %llu st%d cb reg%d addr=%#llx size=%llu pool=%#llx+%#llx f=%g,%g,%g,%g", g_stat_pass, nvn_stage, reg, (unsigned long long)u->addr, (unsigned long long)u->size,
                     (unsigned long long)(u->addr - mo), (unsigned long long)mo, ((float *)u->addr)[0], ((float *)u->addr)[1], ((float *)u->addr)[2], ((float *)u->addr)[3]);
-@@ -8995,9 +9035,32 @@
+@@ -8995,9 +9055,32 @@
     Returns 1 when the draw was replaced (not to be encoded). */
  static int mfxup_draw(NvProg *pr) {
      g_mfxup_src = nil; g_mfxup_out = nil; g_mfxup_sh = nil;
@@ -1362,7 +1413,7 @@
      if (mfxup_dock(fs)) {
          static unsigned n; if (++n % 1800 == 1) { char b[200]; mfxup_stats(MFXUP_DOCKED, b, sizeof b);
              MLOG("[mfx-up] 至帧 %llu：%s；替换游戏放大 %llu 次，保留 %llu 次（建不出或在后台建 %llu、目标不符 %llu、混合/掩码/深度 %llu、尺寸 %llu、视口/剪裁 %llu、常量 %llu）",
-@@ -9773,6 +9836,63 @@
+@@ -9773,6 +9856,63 @@
      defer_obj_unref(sv); defer_obj_unref(dv); defer_obj_release(pb);   // 本次提交跑完再放（视图不单独驻留，参数块撤驻留） | Release after this submit has finished running (views are not made resident separately; the parameter block is removed from residency)
      return 1;
  }
@@ -1426,7 +1477,7 @@
  // GPU：贴图 → 贴图（原先误列为空操作，选角页每帧 3 次）。等尺寸、不镜像、同格式 → 逐层 blit；其余语义（缩放带过滤、镜像、换格式）blit 表达不了，报红待实现
  // GPU: texture -> texture (previously mislisted as a no-op, 3 times per frame on the character select page). Same size, not mirrored, same format -> blit layer by layer; the other semantics (scaling with filtering, mirroring, format change) cannot be expressed by blit: report a failure, to be implemented
  static void copy_t2t(const p_copy_t2t *c) {
-@@ -9799,6 +9919,7 @@
+@@ -9799,6 +9939,7 @@
          for (int z = 0; z < nz && ok; z++) ok = copy_t2t_astc(s, d, sl, sz0 + c->sr.zoffset + z, dl, dz0 + c->dr.zoffset + z, c->sr.xoffset, c->sr.yoffset, c->dr.xoffset, c->dr.yoffset, c->sr.width, c->sr.height);
          if (ok) return;
      }
@@ -1434,7 +1485,7 @@
      if (c->sr.width != c->dr.width || c->sr.height != c->dr.height || (c->sr.depth ? c->sr.depth : 1) != (c->dr.depth ? c->dr.depth : 1) || (c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT)
          || s.pixelFormat != d.pixelFormat || s3 != d3) {
          RED_ONCE(33, "贴图→贴图拷贝未实现的形态：%dx%dx%d→%dx%dx%d 标志 %#x 格式 %lu→%lu 3D %d→%d", c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth,
-@@ -10764,7 +10885,7 @@
+@@ -10764,7 +10905,7 @@
  static id<MTLTexture> output_upscale(id<MTL4CommandBuffer> cb, id<MTLTexture> src, NSUInteger cx, NSUInteger cy, NSUInteger cw, NSUInteger ch, MTLViewport vp, int slot) {
      static NSUInteger sw, sh; static int same;
      if (slot >= 0 && slot < 3) g_outup_timed[slot] = 0;
@@ -1443,7 +1494,7 @@
      NSUInteger ow = (NSUInteger)vp.width, oh = (NSUInteger)vp.height;
      if (cx || cy || ow < cw + 16 || oh < ch + 9) { g_outup_skip[1]++; return nil; }
      if (ow != sw || oh != sh) { sw = ow; sh = oh; same = 0; }
-@@ -10785,6 +10906,11 @@
+@@ -10785,6 +10926,11 @@
      return out;
  }
  static int dcmp_out(const void *x, const void *y) { double a = *(const double *)x, b = *(const double *)y; return a < b ? -1 : a > b; }
@@ -1455,7 +1506,7 @@
  static void outup_note_gpu(int slot) {   // the present command buffer of this slot completed: the upscale's GPU time
      if (!g_outup_heap || g_outup_hz <= 0) return;
      NSData *d = [g_outup_heap resolveCounterRange:NSMakeRange((NSUInteger)slot * 2, 2)]; const MTL4TimestampHeapEntry *t = d.bytes;
-@@ -10831,6 +10957,10 @@
+@@ -10831,6 +10977,10 @@
      [en setRenderPipelineState:g_blit_pso]; [en setFragmentTexture:src atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
      float uv[8] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
                     (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
@@ -1466,7 +1517,7 @@
      [en setFragmentBytes:uv length:sizeof uv atIndex:0];
      [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
      MTLViewport ovp; float fuv[8];
-@@ -10858,7 +10988,7 @@
+@@ -10858,7 +11008,7 @@
          }
          cx = crop[0]; cy = crop[1]; cw = crop[2]; ch = crop[3];
      }
@@ -1475,7 +1526,7 @@
      present_pipeline(dst.pixelFormat);
      double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
      MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
-@@ -10881,6 +11011,10 @@
+@@ -10881,6 +11031,10 @@
      float *uv = g_present_uv[uv_i].contents;
      uv[0] = (float)cx / pic.width; uv[1] = (float)cy / pic.height; uv[2] = (float)cw / pic.width; uv[3] = (float)ch / pic.height;
      uv[4] = (cx + 0.5f) / pic.width; uv[5] = (cy + 0.5f) / pic.height; uv[6] = (cx + cw - 0.5f) / pic.width; uv[7] = (cy + ch - 0.5f) / pic.height;
@@ -1486,7 +1537,7 @@
      [args setAddress:g_present_uv[uv_i].gpuAddress atIndex:0];
      [en setArgumentTable:args atStages:MTLRenderStageFragment];
      [en setViewport:vp]; [en setRenderPipelineState:g_blit_pso];
-@@ -11632,6 +11766,23 @@
+@@ -11632,6 +11786,23 @@
          if (!known) g_mfx.swap[g_mfx.nswap < 4 ? g_mfx.nswap++ : (int)(t->serial % 4)] = t->serial;
          g_mfx.swap_w = t->d.width; g_mfx.swap_h = t->d.height;
      }
