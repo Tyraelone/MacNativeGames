@@ -10,7 +10,7 @@ Play your own copy of **The Legend of Zelda: Tears of the Kingdom** natively on 
 
 Update history:
 
-October 21: Added an experimental Kirby Star Allies base-game native preview, with guarded 60 FPS pacing, 1/2/3 shortcuts and UI coordinate fixes. See its separate status and developer instructions below.
+October 20–21: Brought the Kirby Star Allies base-game native preview through menus, the first two stage entrances and save reload; added guarded 60 FPS pacing, 1/2/3 shortcuts and UI coordinate fixes. Reduced repeated lookups in its battle draw path, then signed and installed a local app with the game icon. See its status and limits below.
 October 18: Added 1.4.3 support and shader prewarming before the first play session (about 10 minutes).
 October 17: Added 1.0.0 and 1.1.2 support. First-launch shader prewarming was not available yet, so new scenes could stutter.
 
@@ -20,6 +20,8 @@ October 17: Added 1.0.0 and 1.1.2 support. First-launch shader prewarming was no
 ## Kirby Star Allies native preview
 
 An experimental native port of **Kirby Star Allies**, title ID `01007E3006DDA000`, base version `v0`, is available in [games/kirby](games/kirby/README.md). Local checks cover menus, the first two stage entrances, basic movement, save reload, UI alignment, 60 FPS pacing and picture/interpolation switching. Frame-rate observations are scene-specific; full-game completion, later worlds and movie PCM playback remain unverified or incomplete.
+
+Battle sampling on October 21 found repeated environment and resource lookups in ordinary draw calls. After the host and launcher changes, the same first-stage enemy-area sample no longer showed `draw_inner → getenv`; this does not establish stable 60 FPS in other battles. The performance change is on `main` (`3be0e42`). A local build was signed, given an icon extracted from the user's game package, installed as `/Applications/星之卡比.app`, and launched to the title screen. Disposable test Apps were cleared; the optimized package and its pre-optimization backup remain outside the repository. The installed App keeps the existing Kirby preview save and cache location. This local installation is not a new one-command build path.
 
 Kirby uses an adapted **external copy** of the host. It is not an option in `build_app.py`; `package_preview.py` packages an already prepared and validated Kirby host. See the [developer build and packaging steps](games/kirby/README.md#开发构建与打包) and [game-data-free tests](games/kirby/README.md#自动测试与验证边界). Game files, keys, Apps, extracted data, saves and caches stay outside this source repository.
 
@@ -179,7 +181,7 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license: [THIRD_PAR
 
 更新历史：
 
-10 月 21 日：加入《星之卡比 新星同盟》基础版原生开发预览，包含带原值校验的 60 帧节拍、1/2/3 快捷键和 UI 坐标修复；状态和开发说明见下方独立入口。
+10 月 20–21 日：《星之卡比 新星同盟》基础版原生预览已进入菜单、前两关入口并验证存档读回；加入带原值校验的 60 帧节拍、1/2/3 快捷键和 UI 坐标修复。随后减少战斗绘制路径中的重复查询，并在本机签名、安装带游戏图标的 App；状态与限制见下方。
 10 月 18 日：支持 1.4.3，并加入首次游玩前的着色器预热（约 10 分钟）。
 10 月 17 日：支持 1.0.0 和 1.1.2；当时尚未加入首次启动着色器预热，进入新场景可能卡顿。
 
@@ -188,6 +190,8 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license: [THIRD_PAR
 ## 星之卡比 新星同盟原生预览
 
 [games/kirby](games/kirby/README.md) 提供 title ID `01007E3006DDA000`、基础版 `v0` 的实验性原生移植。本机已验证菜单、前两个关卡入口、基础移动、存档读回、UI 对齐、60 帧节拍及画质／补帧切换。帧率记录只对应测试场景；全流程、后续世界和影片 PCM 播放仍待验证或完成。
+
+10 月 21 日的战斗采样发现普通绘制调用中反复查询环境值和资源。调整宿主与启动器后，同一第一关敌人区域采样不再出现 `draw_inner → getenv`；这不能证明其他战斗场景稳定 60 帧。性能改动已进入 `main`（`3be0e42`）。本机正式包已签名，从用户自己的游戏包提取图标后安装为 `/Applications/星之卡比.app`，并实际启动到标题画面。临时测试 App 已清理；优化包及优化前备份留在仓库外。安装版继续使用原有卡比预览存档与缓存目录。这是本机安装记录，卡比尚无一键从 NSP 构建 App 的入口。
 
 卡比使用宿主的**项目外适配副本**，尚未接入 `build_app.py`。`package_preview.py` 只负责打包已准备、已验证的卡比宿主，详见[开发构建与打包](games/kirby/README.md#开发构建与打包)及[无需游戏数据的测试](games/kirby/README.md#自动测试与验证边界)。游戏文件、密钥、App、解包数据、存档和缓存均存放在源码项目外。
 
