@@ -21,3 +21,6 @@ Fetched or linked at build time (not in this repository):
 | [hactool](https://github.com/SciresM/hactool) at `1d64a83` (with explicit private title-key-file hook), including its bundled mbedTLS | Base + update BKTR merge at build time only | ISC (hactool), Apache-2.0 (mbedTLS); see fetched source LICENSE files |
 | libopus (Homebrew), linked statically | Opus audio | BSD-3-Clause |
 | libvpx (Homebrew), linked statically | VP9 movies | BSD-3-Clause |
+| FFmpeg libraries (Homebrew), linked dynamically by the Kirby preview | H.264 / AAC decoding and frame / sample conversion through libavcodec, libavutil, libswscale and libswresample | Build-dependent; the locally tested Homebrew build reports GPL-3.0-or-later (`ffmpeg -L`) |
+
+The Kirby packager copies its Homebrew dynamic-library dependencies and the installed formula's `LICENSE*` / `COPYING*` files into the App (`Contents/Frameworks` and `Contents/Resources/licenses`). The licenses of the exact FFmpeg build and its transitive libraries apply; the repository's MIT license does not replace them. The source repository does not include FFmpeg binaries or game assets.

@@ -1,0 +1,1686 @@
+--- a/Makefile
++++ b/Makefile
+@@ -69,7 +69,7 @@
+ 	"$(PY)" scripts/prepare_runtime.py
+ 
+ build/totk-native: Makefile runtime/loader.c runtime/runtime.h runtime/game_patches.c runtime/game_patches.h runtime/game_version.h runtime/world_survey.c runtime/world_survey.h runtime/game_slot.c runtime/services.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/romfs.c runtime/romfs_path.h runtime/threads.c runtime/thread_compat.h runtime/thread_enter.S runtime/ipc.h runtime/audio_renderer.h runtime/audio_mixer.h runtime/audio_reverb.h runtime/fs_host.h runtime/autoload.h runtime/autoload.c build/runtime_tables.h build/romfs_config.h build/shared_fonts_config.h runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/movie_host.h runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS)
+-	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_patches.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
++	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include -I/opt/homebrew/opt/ffmpeg/include -DKIRBY_FFMPEG runtime/loader.c runtime/game_patches.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -L/opt/homebrew/opt/ffmpeg/lib -lavcodec -lavutil -lswscale -lswresample -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
+ 
+ build/pso_manifest.tsv: assets/pso_manifest.tsv
+ 	@mkdir -p build
+--- a/runtime/loader.c
++++ b/runtime/loader.c
+@@ -416,7 +416,6 @@
+ #endif
+ }
+ uint64_t runtime_image_bytes(void) { uint64_t total=0;for(unsigned i=0;i<NM;i++)total+=modules[i].key_off;return page_up(total); }
+-static void loader_ready(void) { fprintf(stderr,"[totk] rtld callback: modules linked\n"); }
+ static void module_inits(void) {
+  fprintf(stderr,"[totk] SDK startup returned; running module constructors\n");
+  for(unsigned i=0;i<NM;i++){char detail[128];snprintf(detail,sizeof detail,TOTK_UI("运行 %s 游戏模块初始化代码（%u/%u）","Running the %s game module initializers (%u/%u)"),modules[i].name,i+1,(unsigned)NM);runtime_boot_status(TOTK_UI("初始化游戏模块","Initializing game modules"),detail);fprintf(stderr,"[totk] ENTER %s DT_INIT\n",modules[i].name);((void(*)(void))(modules[i].base+modules[i].init))();uint32_t state;memcpy(&state,modules[i].base+modules[i].ctor_flag,4);need(state==2,"DT_INIT deferred or skipped constructors");
+@@ -428,13 +427,12 @@
+  for(unsigned i=0;i<NM;i++){uint32_t state;memcpy(&state,modules[i].base+modules[i].ctor_flag,4);need(state==2,"constructor checkpoint state");}
+  printf("{\"status\":\"pass\",\"phase\":4,\"original_nnMain_return_pc\":\"0x%x\",\"scope\":\"all DT_INIT constructor loops completed; original nnMain prefix executed; stops at focus setup\"}\n", GAME_ADDR(0xe995c4));fflush(stdout);_exit(0);
+ }
+-static void module_finis(void) { runtime_fail("guest exited: module finalizers not yet implemented"); }
+ static void boot(void) {
+  fprintf(stderr,"[totk] game version %s\n", TOTK_GAME_VERSION);
+  runtime_boot_status(TOTK_UI("启动游戏运行环境","Starting the game runtime"),TOTK_UI("连接游戏代码与 macOS 系统服务","Connecting the game code to macOS system services"));
+  runtime_thread_init();uint32_t main_handle=svc_thread_main_init();
+  fprintf(stderr,"[totk] ENTER original nn::init::Start sdk+0xfa060\n");
+- ((void(*)(uint64_t,uint64_t,void(*)(void),void(*)(void),void(*)(void)))required("_ZN2nn4init5StartEmmPFvvES2_S2_"))(main_handle,0,loader_ready,module_inits,module_finis);
++ ((void(*)(uint64_t,uint64_t,void(*)(void),void(*)(void)))required("_ZN2nn4init5StartEmmPFvvES2_"))(main_handle,0,module_inits,(void(*)(void))required("nnMain"));
+  runtime_fail("SDK Start unexpectedly returned");
+ }
+ /* Host aborts (e.g. Metal validation assertions) print the host call stack before the process ends. */
+--- a/runtime/frontend.m
++++ b/runtime/frontend.m
+@@ -8,6 +8,7 @@
+ #include "runtime.h"
+ #include "game_version.h"
+ #include "totk_ui_lang.h"
++int fps_overlay_hints_enabled(void);
+ static NSWindow *window;
+ uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented so far */
+ static CAMetalLayer *metalLayer;
+@@ -148,7 +149,7 @@
+ static void front_install_menu(void){
+  NSMenu *menu=[NSMenu new],*appMenu=[NSMenu new];
+  NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
+- NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@"Quit Tears of the Kingdom" action:@selector(performClose:) keyEquivalent:@"q"];
++ NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:getenv("KIRBY_PREVIEW")?@"退出星之卡比 原生预览":@"Quit Tears of the Kingdom" action:@selector(performClose:) keyEquivalent:@"q"];
+  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
+  [appMenu addItem:quit];NSApp.mainMenu=menu;
+ }
+@@ -168,6 +169,7 @@
+   /* An agent's test game (TOTK_SLOT_OWNER other than user) says so in its title: it plays a save copy and its script closes it. */
+   const char *owner=getenv("TOTK_SLOT_OWNER"),*purpose=getenv("TOTK_SLOT_PURPOSE");
+   window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@(TOTK_UI("测试局（%s）Ver. %s：%s — 存档副本，进度不会存进你的存档，脚本会自己关闭","Test session (%s) Ver. %s: %s — save copy, progress is not saved to your save, the script closes it")),owner,TOTK_GAME_VERSION,purpose&&*purpose?purpose:TOTK_UI("代理测试","agent test")]:[NSString stringWithFormat:@"Tears of the Kingdom  Mac — Ver. %s",TOTK_GAME_VERSION];
++  if(getenv("KIRBY_PREVIEW"))window.title=@"星之卡比 新星同盟 — 原生预览（基础版）";
+   windowDelegate=[TOTKWindowDelegate new];window.delegate=windowDelegate;
+   front_install_menu();
+   window.collectionBehavior|=NSWindowCollectionBehaviorFullScreenPrimary;
+@@ -187,6 +189,7 @@
+   [bootOverlay addSubview:bootStage];[bootOverlay addSubview:bootDetail];[bootOverlay addSubview:bootProgress];
+   [window.contentView addSubview:bootOverlay];[bootProgress startAnimation:nil];
+   shortcutHelp=[[TOTKShortcutHelp alloc] initWithFrame:NSZeroRect];shortcutHelp.autoresizingMask=NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
++  shortcutHelp.hidden=!fps_overlay_hints_enabled();
+   /* Keep discovery/warm-up visible; the help appears after the opaque boot
+      overlay is hidden. Key 1 still controls its requested visibility. */
+   [window.contentView addSubview:shortcutHelp positioned:NSWindowBelow relativeTo:bootOverlay];
+@@ -295,6 +298,7 @@
+ static uint32_t vi_open(void **out){if(!viReady||!out)return 0xf601;*out=&displayIdentity;return 0;}
+ static uint32_t vi_layer(void **out,void *display){if(!out||display!=&displayIdentity)return 0xf601;*out=&layerIdentity;return 0;}
+ static uint32_t vi_window(void **out,void *layer){if(!out||layer!=&layerIdentity)return 0xf601;*out=front_metal_layer();return 0;}
++static uint32_t vi_scale(void *layer,int mode){if(layer!=&layerIdentity)return 0xf601;(void)mode;return 0;}
+ static uint32_t vi_vsync(void *ev,void *display){
+  if(!ev||display!=&displayIdentity)return 0xf601;hle_bind_system_event(ev,1);
+  pthread_mutex_lock(&vsyncLock);if(vsyncCount>=16)runtime_fail("VI display event limit");vsyncEvents[vsyncCount++]=ev;pthread_mutex_unlock(&vsyncLock);return 0;
+@@ -303,6 +307,7 @@
+  static const struct{const char *name;void *fn;} entries[]={
+  {"_ZN2nn2vi10InitializeEv",vi_initialize},{"_ZN2nn2vi18OpenDefaultDisplayEPPNS0_7DisplayE",vi_open},
+  {"_ZN2nn2vi11CreateLayerEPPNS0_5LayerEPNS0_7DisplayE",vi_layer},{"_ZN2nn2vi15GetNativeWindowEPPvPNS0_5LayerE",vi_window},
+- {"_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE",vi_vsync}};
++ {"_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE",vi_vsync},
++ {"_ZN2nn2vi19SetLayerScalingModeEPNS0_5LayerENS0_11ScalingModeE",vi_scale}};
+  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
+ }
+--- a/runtime/ipc.c
++++ b/runtime/ipc.c
+@@ -32,7 +32,7 @@
+ static IpcSession *session_new(const char *name, IpcHandler handler, void *state, void (*close)(void *)) {
+     IpcSession *s = calloc(1, sizeof *s);
+     if (!s) runtime_fail("IPC session allocation");
+-    *s = (IpcSession){name, handler, state, close};
++    *s = (IpcSession){name, handler, state, close, 0};
+     return s;
+ }
+ uint32_t runtime_ipc_new_session(const char *name, IpcHandler handler, void *state, void (*close)(void *)) {
+@@ -97,7 +97,7 @@
+     if ((const uint8_t *)recv - (const uint8_t *)m > MSG_BYTES) runtime_fail("IPC request exceeds message buffer");
+ }
+ 
+-static void respond(uint32_t *m, int tipc, const IpcResponse *rs) {
++static void respond(uint32_t *m, int tipc, int domain, const IpcResponse *rs) {
+     uint32_t out[MSG_BYTES / 4]; memset(out, 0, sizeof out);
+     unsigned special = rs->ncopy || rs->nmove;
+     uint32_t *p = out + 2;
+@@ -115,6 +115,7 @@
+     unsigned header = tipc ? 4 : 16;
+     if (tipc) payload = words;
+     else payload = (uint8_t *)out + (((words - (uint8_t *)out) + 15) & ~15);
++    if (domain) { memset(payload, 0, 16); payload += 16; }
+     unsigned used = (unsigned)(payload - words) + header + rs->data_size;
+     unsigned nwords = tipc ? (used + 3) / 4 : (used + 16 + 3) / 4;   /* CMIF keeps alignment slack like libnx */
+     if ((size_t)(words - (uint8_t *)out) + nwords * 4 > MSG_BYTES) runtime_fail("IPC response exceeds message buffer");
+@@ -129,6 +130,7 @@
+ /* ---------- Control requests (CMIF) ---------- */
+ static void control(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+     switch (rq->cmd) {
++    case 0: { s->domain_id = 1; uint32_t object_id = 1; IPC_OUT(rs, object_id); return; }
+     case 3: { uint16_t n = POINTER_BUFFER_SIZE; IPC_OUT(rs, n); return; }   /* QueryPointerBufferSize */
+     case 2: case 4:                                                           /* CloneCurrentObject(Ex) */
+         rs->move[rs->nmove++] = runtime_ipc_new_session(s->name, s->handler, s->state, NULL);
+@@ -150,8 +152,14 @@
+     if (tipc) { rq.cmd = rq.type - T_TIPC_BASE; rq.data = bytes; rq.data_size = (uint32_t)(end - bytes); }
+     else if (rq.type == T_REQUEST || rq.type == T_REQUEST_CTX || rq.type == T_CONTROL || rq.type == T_CONTROL_CTX) {
+         const uint8_t *payload = (const uint8_t *)m + (((bytes - (const uint8_t *)m) + 15) & ~15);
++        if (s->domain_id && (rq.type == T_REQUEST || rq.type == T_REQUEST_CTX)) {
++            if (payload + 16 > end) runtime_fail("IPC domain header truncated");
++            uint32_t domain[4]; memcpy(domain, payload, 16);
++            if ((domain[0] & 255) != 1 || domain[1] != s->domain_id) runtime_fail("IPC unsupported domain request");
++            payload += 16;
++        }
+         uint32_t h[4]; memcpy(h, payload, 16);
+-        if (h[0] != CMIF_IN_MAGIC) { fprintf(stderr, "[totk-ipc] %s: bad CMIF magic %#x (domain sessions are not implemented)\n", s->name, h[0]); runtime_fail("IPC bad CMIF header"); }
++        if (h[0] != CMIF_IN_MAGIC) { fprintf(stderr, "[totk-ipc] %s: bad CMIF magic %#x\n", s->name, h[0]); runtime_fail("IPC bad CMIF header"); }
+         rq.cmd = h[2]; rq.data = payload + 16; rq.data_size = payload + 16 <= end ? (uint32_t)(end - payload - 16) : 0;
+     } else {
+         fprintf(stderr, "[totk-ipc] %s: message type %u at %p:", s->name, rq.type, (void *)m);
+@@ -160,7 +168,7 @@
+     }
+     if (rq.type == T_CONTROL || rq.type == T_CONTROL_CTX) control(s, &rq, &rs);
+     else s->handler(s, &rq, &rs);
+-    respond(m, tipc, &rs);
++    respond(m, tipc, s->domain_id && rq.type != T_CONTROL && rq.type != T_CONTROL_CTX, &rs);
+ }
+ 
+ /* ---------- sm: service manager ---------- */
+@@ -208,3 +216,83 @@
+     default: return 0;
+     }
+ }
++static void kirby_settings_probe(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
++    static const char *names[] = {"ja","en-US","fr","de","it","es","zh-CN","ko","nl","pt","ru","zh-TW","en-GB","fr-CA","es-419","zh-Hans","zh-Hant"};
++    switch (rq->cmd) {
++    case 5: case 1: {
++        if (rq->nb != 1 || rq->b[0].size % 8) runtime_fail("set language-code buffer");
++        unsigned count = sizeof names / sizeof *names;
++        if (count > rq->b[0].size / 8) count = (unsigned)(rq->b[0].size / 8);
++        uint64_t *dest = ipc_guest(rq->b[0].addr, count * 8);
++        for (unsigned i=0; i<count; i++) { uint64_t code=0; memcpy(&code,names[i],strlen(names[i])); dest[i]=code; }
++        uint32_t n=count; IPC_OUT(rs,n); return;
++    }
++    case 6: case 3: { uint32_t count=sizeof names / sizeof *names; IPC_OUT(rs,count); return; }
++    case 0: { uint64_t code=0; const char *name=getenv("TOTK_LANG"); if(!name||strlen(name)>7)name="en-US"; memcpy(&code,name,strlen(name)); IPC_OUT(rs,code); return; }
++    case 4: { uint32_t region=1; IPC_OUT(rs,region); return; }
++    default: ipc_unimplemented(s,rq);
++    }
++}
++__attribute__((constructor)) static void register_kirby_settings_probe(void) { runtime_ipc_register("set",kirby_settings_probe,NULL,NULL); }
++static void kirby_hid_probe(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) { if (rq->cmd == 121 || rq->cmd == 101 || rq->cmd == 82) { uint32_t value = rq->cmd == 101 ? 3u : rq->cmd == 82 ? 1u : 0u; IPC_OUT(rs, value); return; } if (rq->cmd == 201) return; ipc_unimplemented(s,rq); }
++__attribute__((constructor)) static void register_kirby_hid_probe(void) { runtime_ipc_register("hid",kirby_hid_probe,NULL,NULL); }
++
++static void kirby_prepo_probe(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
++    (void)rs;
++    switch (rq->cmd) {
++    case 10100: case 10101: case 10102: case 10103: case 10200: return;
++    default: ipc_unimplemented(s,rq);
++    }
++}
++__attribute__((constructor)) static void register_kirby_prepo_probe(void) { runtime_ipc_register("prepo:u",kirby_prepo_probe,NULL,NULL); }
++
++typedef struct { uint32_t event; uint64_t released[32]; unsigned count; } KirbyAudout;
++static void kirby_audout_close(void *state){ free(state); }
++static void kirby_audout_stream(IpcSession *s,const IpcRequest *rq,IpcResponse *rs){
++    KirbyAudout *a=s->state;
++    switch(rq->cmd){
++    case 0:{uint32_t state=1;IPC_OUT(rs,state);return;}
++    case 1:case 2:return;
++    case 4:
++        if(!a->event)a->event=runtime_event_new();
++        rs->copy[rs->ncopy++]=runtime_event_readable(a->event);return;
++    case 3:case 7:{
++        uint64_t pointer=0;memcpy(&pointer,ipc_arg(rq,0,8),8);
++        if(a->count>=32)runtime_fail("audout released buffer queue full");
++        a->released[a->count++]=pointer;
++        if(a->event)runtime_event_signal(a->event);
++        return;
++    }
++    case 5:case 8:{
++        if(rq->nb<1&&rq->nc<1)runtime_fail("audout released buffer output missing");
++        IpcBuffer target=rq->nb&&rq->b[0].size?rq->b[0]:rq->c[0];
++        uint32_t n=a->count;
++        if((uint64_t)n*8>target.size)n=(uint32_t)(target.size/8);
++        if(n)memcpy(ipc_guest(target.addr,(uint64_t)n*8),a->released,(size_t)n*8);
++        memmove(a->released,a->released+n,(a->count-n)*8);a->count-=n;
++        IPC_OUT(rs,n);return;
++    }
++    case 6:{uint8_t contains=0;IPC_OUT(rs,contains);return;}
++    case 9:{uint32_t count=a->count;IPC_OUT(rs,count);return;}
++    case 10:{uint64_t samples=0;IPC_OUT(rs,samples);return;}
++    case 11:{uint8_t pending=a->count!=0;a->count=0;IPC_OUT(rs,pending);return;}
++    default:ipc_unimplemented(s,rq);
++    }
++}
++static void kirby_audout_probe(IpcSession *s,const IpcRequest *rq,IpcResponse *rs){
++    if(rq->cmd==1){
++        if(rq->data_size<8||rq->nb<1)runtime_fail("audout open arguments");
++        const uint32_t *arg=(const uint32_t *)ipc_arg(rq,0,8);
++        unsigned bytes=rq->b[0].size<0x100?rq->b[0].size:0x100;
++        char *name=ipc_guest(rq->b[0].addr,bytes);memset(name,0,bytes);
++        if(bytes>10)memcpy(name,"DeviceOut",9);
++        uint32_t result[4]={arg[0]?arg[0]:48000,2,2,0};
++        ipc_out(rs,result,sizeof(result));
++        KirbyAudout *stream=calloc(1,sizeof(*stream));if(!stream)runtime_fail("audout state allocation");
++        rs->move[rs->nmove++]=runtime_ipc_new_session("audout:stream",kirby_audout_stream,stream,kirby_audout_close);
++        fprintf(stderr,"[kirby-audout] opened %u Hz %u channels, PCM format %u\n",result[0],result[1],result[2]);
++        return;
++    }
++    ipc_unimplemented(s,rq);
++}
++__attribute__((constructor)) static void register_kirby_audout_probe(void){runtime_ipc_register("audout:u",kirby_audout_probe,NULL,NULL);}
+--- a/runtime/ipc.h
++++ b/runtime/ipc.h
+@@ -25,7 +25,7 @@
+ 
+ struct IpcSession;
+ typedef void (*IpcHandler)(struct IpcSession *s, const IpcRequest *rq, IpcResponse *rs);
+-typedef struct IpcSession { const char *name; IpcHandler handler; void *state; void (*close)(void *state); } IpcSession;
++typedef struct IpcSession { const char *name; IpcHandler handler; void *state; void (*close)(void *state); uint32_t domain_id; } IpcSession;
+ 
+ /* Service registry: open(state out) creates per-session state for a named service. */
+ typedef void *(*IpcOpen)(void);
+--- a/runtime/input.c
++++ b/runtime/input.c
+@@ -62,7 +62,9 @@
+  if(pad.buttons&~padSeen||abs(pad.lx)>16384||abs(pad.ly)>16384||abs(pad.rx)>16384||abs(pad.ry)>16384)user_input("controller");padSeen=pad.buttons;
+  if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;
+  if(abs(pad.rx)>abs(state.rx))state.rx=pad.rx;if(abs(pad.ry)>abs(state.ry))state.ry=pad.ry;
+- }*out=state;pthread_mutex_unlock(&inputLock);return 1;}
++ }*out=state;pthread_mutex_unlock(&inputLock);
++ if(state.buttons && getenv("TOTK_INPUT_LOG"))fprintf(stderr,"[totk-input] sampled controller %#x buttons %#llx\n",*id,(unsigned long long)state.buttons);
++ return 1;}
+ static int disconnected_states(NpadState *out,int max,const uint32_t *id){if(id)input_log("joy-con state",*id);if(max<=0)return 0;if(!out)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);*out=(NpadState){.sampling=++sample};pthread_mutex_unlock(&inputLock);return 1;}
+ static void hold_type(int type){if(type<0||type>1)runtime_fail("invalid joy hold type");holdType=type;(void)holdType;}
+ static void disconnect(const uint32_t *id){if(!id)runtime_fail("disconnect id");input_log("disconnect",*id);if(*id==pad_id()){   /* only the pad in use: in handheld mode TOTK disconnects player 1 */pthread_mutex_lock(&inputLock);allowed=false;pthread_mutex_unlock(&inputLock);runtime_input_clear();}}
+@@ -87,9 +89,28 @@
+  return 0;
+ }
+ /* Vibration devices and the six-axis sensor: runtime/hid_feedback.c (none unless TOTK_RUMBLE=1 / TOTK_GYRO=1). */
++static void kirby_initialize_debugpad(void) { }
++/* Singular SDK getters always fill their output, even without a device. A bare
++   return leaves stack bytes that Kirby merges into its real controller state. */
++static void kirby_debugpad_state(void *out) { if(!out)runtime_fail("debug pad output pointer");memset(out,0,32); }
++static void kirby_touch_state16(void *out) { if(!out)runtime_fail("touch output pointer");memset(out,0,16+16*40); }
++static int kirby_debugpad_states(void *out,int max) { (void)out; (void)max; return 0; }
++static void kirby_full_state(NpadState *out,const uint32_t *id) { (void)full_states(out,1,id); }
++static void kirby_handheld_state(NpadState *out,const uint32_t *id) { (void)handheld_states(out,1,id); }
++static void kirby_disconnected_state(NpadState *out,const uint32_t *id) { (void)disconnected_states(out,1,id); }
+ void *runtime_input_override(const char *name){
+  void *feedback=runtime_hid_feedback_override(name);if(feedback)return feedback;
+  static const struct{const char *name;void *fn;} entries[]={
++ {"_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj",kirby_full_state},
++ {"_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj",kirby_handheld_state},
++ {"_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj",kirby_disconnected_state},
++ {"_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyLeftStateERKj",kirby_disconnected_state},
++ {"_ZN2nn3hid12GetNpadStateEPNS0_17NpadJoyRightStateERKj",kirby_disconnected_state},
++ {"_ZN2nn3hid18InitializeDebugPadEv",kirby_initialize_debugpad},
++ {"_ZN2nn3hid16GetDebugPadStateEPNS0_13DebugPadStateE",kirby_debugpad_state},
++ {"_ZN2nn3hid19GetTouchScreenStateILm16EEEvPNS0_16TouchScreenStateIXT_EEE",kirby_touch_state16},
++ {"_ZN2nn3hid17GetDebugPadStatesEPNS0_13DebugPadStateEi",kirby_debugpad_states},
++ {"_ZN2nn3hid21InitializeTouchScreenEv",kirby_initialize_debugpad},
+  {"_ZN2nn3hid14InitializeNpadEv",initialize},{"_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm",supported_ids},{"_ZN2nn3hid24SetSupportedNpadStyleSetENS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE",supported_styles},
+  {"_ZN2nn3hid15GetNpadStyleSetERKj",style},{"_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj",full_states},
+  {"_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyDualStateEiRKj",disconnected_states},{"_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyLeftStateEiRKj",disconnected_states},
+--- a/runtime/account.c
++++ b/runtime/account.c
+@@ -36,6 +36,7 @@
+ static bool same(const Uid *uid){return uid&&uid->lo==local.lo&&uid->hi==local.hi;}
+ static bool valid(const UserHandle *handle){if(!handle||!same(&handle->uid))return false;for(unsigned i=0;i<64;i++)if(tokens[i]&&tokens[i]==handle->token)return true;return false;}
+ static unsigned preselected(UserHandle *out){if(!out)runtime_fail("account null user handle");initialize();lock_acquire();for(unsigned i=0;i<64;i++)if(!tokens[i]){tokens[i]=nextToken++;*out=(UserHandle){local,tokens[i]};lock_release();return 1;}lock_release();return 0;}
++static uint32_t open_preselected(UserHandle *out){return preselected(out)?0:0x7c67;}
+ static uint32_t user_id(Uid *out,const UserHandle *handle){lock_acquire();bool ok=out&&valid(handle);if(ok)*out=local;lock_release();return ok?0:0x7c67;}
+ static void close_user(const UserHandle *handle){lock_acquire();if(!valid(handle))runtime_fail("invalid local account handle close");for(unsigned i=0;i<64;i++)if(tokens[i]==handle->token){tokens[i]=0;break;}lock_release();}
+ static uint32_t existence(unsigned char *out,const Uid *uid){if(!out||!uid)return 0x7c67;initialize();*out=same(uid);return 0;}
+@@ -44,6 +45,7 @@
+ void *runtime_account_override(const char *name){
+  static const struct{const char *name;void *fn;} entries[]={
+  {"_ZN2nn7account10InitializeEv",initialize},{"_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE",preselected},
++ {"_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE",open_preselected},
+  {"_ZN2nn7account9CloseUserERKNS0_10UserHandleE",close_user},{"_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE",user_id},
+  {"_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE",existence},{"_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE",nickname}};
+  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
+--- a/runtime/fs_host.c
++++ b/runtime/fs_host.c
+@@ -336,8 +336,12 @@
+     printf("{\"status\":\"pass\",\"probe\":\"probe-save\",\"checks\":%u,\"scope\":\"save-in-progress state (runtime_fs_save_busy) through open / write / close / create / rename / delete / commit on a save mount; reads and temporary storage do not count; stale uncommitted changes do not hold a close\"}\n", checks);
+ }
+ 
++static void kirby_fs_set_allocator(void *alloc, void *free_fn) { (void)alloc; (void)free_fn; }
++static uint32_t kirby_ensure_save_data(const void *uid) { (void)uid; ready(); return 0; }
+ void *runtime_fs_host_override(const char *name) {
+     static const struct { const char *name; void *fn; } map[] = {
++        {"_ZN2nn2fs12SetAllocatorEPFPvmEPFvS1_mE", kirby_fs_set_allocator},
++        {"_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE", kirby_ensure_save_data},
+         {"_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", open_file}, {"_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE", file_size},
+         {"_ZN2nn2fs9CloseFileENS0_10FileHandleE", close_file}, {"_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc", entry_type},
+         {"_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm", read_file}, {"_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvmRKNS0_10ReadOptionE", read_options},
+@@ -353,6 +357,7 @@
+         {"_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE", mount_save_ro},
+         {"_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE", save_exists},
+         {"_ZN2nn2fs21MountTemporaryStorageEPKc", mount_temp}, {"_ZN2nn2fs7UnmountEPKc", unmount}, {"_ZN2nn2fs6CommitEPKc", commit},
++        {"_ZN2nn2fs14CommitSaveDataEPKc", commit},
+         {"_ZN2nn2fs18CreateCacheStorageEill", create_cache}, {"_ZN2nn2fs18DeleteCacheStorageEi", delete_cache},
+         {"_ZN2nn2fs17MountCacheStorageEPKci", mount_cache},
+         {"_ZN2nn2fs20OpenCacheStorageListEPNS0_22CacheStorageListHandleE", open_cache_list},
+--- a/runtime/audio_renderer.c
++++ b/runtime/audio_renderer.c
+@@ -207,7 +207,7 @@
+     o.revision = REV(revision_number(h.revision) >= 1 ? revision_number(h.revision) : 1);
+     o.memory_pools = npools * sizeof(AudrenPoolOut); o.voices = (uint32_t)vc * sizeof(AudrenVoiceOut);
+     o.effects = (uint32_t)ec * eo; o.sinks = (uint32_t)sc * sizeof(AudrenSinkOut);
+-    o.performance = 0x10; o.behavior = BEHAVIOR_OUT; o.render_info = RENDER_INFO_OUT;
++    o.performance = 0x10; o.behavior = BEHAVIOR_OUT; o.render_info = h.render_info ? RENDER_INFO_OUT : 0;
+     o.total = (uint32_t)sizeof o + o.memory_pools + o.voices + o.effects + o.sinks + o.performance + o.behavior + o.render_info;
+     if (o.total > out_size) { fprintf(stderr, "[totk-audio] output needs %u bytes, client gave %llu (effect out %u)\n", o.total, (unsigned long long)out_size, eo); runtime_fail("audio renderer output size"); }
+     memset(output, 0, out_size);
+--- a/runtime/game_patches.c
++++ b/runtime/game_patches.c
+@@ -1,408 +1,112 @@
++/* Kirby Star Allies base v0, build 059dd87bede7c09ccf9bcb9fe528fa90.
++ * Keep the logical 1920x1080 UI coordinates. Allocate 2560x1440 capacity at
++ * boot. GlbMemPool-Texture grows 320 -> 576 MiB and its System parent
++ * 940 -> 1196 MiB, with the root arena cap raised by the same 256 MiB;
++ * all three are needed to avoid exhausting the child heap.
++ * The existing per-frame resize routine rebuilds active render targets
++ * when its selected resolution changes. Key handlers only publish an atomic
++ * size, never touch live GPU objects from the Cocoa thread. */
+ #include "game_patches.h"
+-#include "game_version.h"
+-#include "world_survey.h"
+-#include <TargetConditionals.h>
++#include <stdatomic.h>
+ #include <stdio.h>
+-#include <stdlib.h>
+ #include <string.h>
+-#include <stdatomic.h>
+-#include <math.h>
+-
+-/* 60 FPS.
+-   TOTK's adaptive present-interval controller (main+0x8f6bec, called once per frame from main+0x8f68b4) turns the main
+-   thread's measured frame work time (system object +0x118, written at main+0x8f6a44 just before the present) into a
+-   number of 60 Hz ticks, clamps it to the controller's [minimum, maximum] interval and hands the result both to
+-   nvnWindowSetPresentInterval and to the variable-frame-rate step (main+0x7a83e4: ratio = interval * 0.5, frame time =
+-   interval / 60). Shipping code uses a minimum of 2 (30 fps), so game speed follows whatever interval is chosen.
+-   The patch lowers the minimum to 1 (60 fps). The controller still raises the interval to 2 or 3 when a frame's work
+-   does not fit, with its own hysteresis, so slow scenes fall back to 30 or 20 fps at correct speed.
+-   Two further sites make the lowering robust: the controller now tries a lower interval when the measured work fits
+-   it (instead of waiting for a stored candidate that shipping code initialises to the old minimum), and the lowered
+-   result is floored at 1 so an interval of 0 can never reach the window or the frame-rate step.
+-   TOTK_FPS60=0 leaves the shipping controller untouched. */
+-typedef struct { uint64_t offset; uint32_t original, replacement; const char *what; } GamePatch;
+-
+-static const GamePatch fps60_sites[] = {
+-    {GAME_ADDR(0x8f6c60), 0x6b08015f, 0x7100055f, "clamp: cmp w10, #1 (was cmp w10, w8 = minimum)"},
+-    {GAME_ADDR(0x8f6c64), 0x1a89b10a, 0x1a9fa52a, "clamp: csinc w10, w9, wzr, ge (desired = max(desired, 1))"},
+-    {GAME_ADDR(0x8f6c88), 0xb9401a8a, 0xd503201f, "lower trigger: nop the stored-candidate load (try lower when desired < current)"},
+-    {GAME_ADDR(0x8f6d18), 0x6b08015f, 0x7100055f, "raise path: cmp w10, #1"},
+-    {GAME_ADDR(0x8f6d28), 0x1a88c1ac, 0x1a9fc5ac, "raise path: csinc w12, w13, wzr, gt (next lower candidate floors at 1)"},
+-    {GAME_ADDR(0x8f6d7c), 0xb9400288, 0x52800028, "lower path: mov w8, #1 (minimum interval 1)"},
+-    {GAME_ADDR(0x8f6d98), 0x2a0a03f5, 0x1a9fa555, "lower path: csinc w21, w10, wzr, ge (result never below 1)"},
+-};
+-
+-static int fps60_enabled(void) {
+-    const char *e = getenv("TOTK_FPS60");
+-    return !(e && !strcmp(e, "0"));
+-}
+-
+-/* One atomic 64-bit value holds ratio (low float) and frame seconds (high
+-   float). The guest reads the two lanes independently; both always remain
+-   finite and in range, including if an update falls between the reads. */
+-static _Atomic uint64_t *frame_step_data;
+-static uint64_t last_present_ns;
+-static double frame_samples[5];
+-static unsigned frame_sample_count, frame_sample_next;
+-
+-static int realtime_enabled(void) {
+-    const char *e = getenv("TOTK_REALTIME");
+-    return !(e && !strcmp(e, "0"));
+-}
+-
+-static uint64_t frame_step_bits(float seconds) {
+-    float ratio = seconds * 30.0f;
+-    uint32_t lo, hi;
+-    memcpy(&lo, &ratio, 4);
+-    memcpy(&hi, &seconds, 4);
+-    return (uint64_t)lo | ((uint64_t)hi << 32);
+-}
+-
+-/* Diagnostics (TOTK_INPUT_FILE "framestep <ms>"): pin the frame step to a fixed length, 0 back to real time. 2026-10-17
+-   this showed the game over "retry" waiting on a step of at least one 30 fps frame. */
+-static _Atomic uint32_t pinned_step_us;
+-void runtime_frame_step_pin(double ms) {
+-    uint32_t us = ms > 0 ? (uint32_t)(ms * 1000.0 + 0.5) : 0;
+-    atomic_store(&pinned_step_us, us);
+-    if (frame_step_data && us) atomic_store_explicit(frame_step_data, frame_step_bits((float)(us / 1e6)), memory_order_release);
+-    if (!us) fprintf(stderr, "[totk] frame step back to real time\n");
+-    else fprintf(stderr, "[totk] frame step pinned at %.3f ms (ratio %.3f, diagnostics)%s\n", us / 1000.0, us / 1e6 * 30.0,
+-                 frame_step_data ? "" : " -- but the real-time patch is off, nothing changes");
+-}
++static _Atomic int output_mode;
++static _Atomic uint64_t *output_size;
++static _Atomic uint64_t *dynamic_limits;
++static uint64_t pack(unsigned w,unsigned h){return ((uint64_t)h<<32)|w;}
++void runtime_frame_step_pin(double ms) { (void)ms; }
+ void runtime_frame_step_update(uint64_t now_ns) {
+-    if (!frame_step_data || !now_ns) return;
+-    if (atomic_load_explicit(&pinned_step_us, memory_order_relaxed)) { last_present_ns = now_ns; return; }
+-    if (!last_present_ns) { last_present_ns = now_ns; return; }
+-    double dt = (double)(now_ns - last_present_ns) * 1e-9;
+-    last_present_ns = now_ns;
+-    if (dt > 0.25 || dt < 0.001) { frame_sample_count = frame_sample_next = 0; return; }
+-    if (dt < 1.0 / 120.0) dt = 1.0 / 120.0;
+-    if (dt > 1.0 / 15.0) dt = 1.0 / 15.0;
+-    frame_samples[frame_sample_next++ % 5] = dt;
+-    if (frame_sample_count < 5) frame_sample_count++;
+-    double sum = 0;
+-    for (unsigned i = 0; i < frame_sample_count; i++) sum += frame_samples[i];
+-    atomic_store_explicit(frame_step_data, frame_step_bits((float)(sum / frame_sample_count)), memory_order_release);
+-}
+-
+-static uint32_t adrp_reg(unsigned rd, uint64_t site, uint64_t target) {
+-    int64_t pages = (int64_t)(target >> 12) - (int64_t)(site >> 12);
+-    if (pages < -(1 << 20) || pages >= (1 << 20)) runtime_fail("real-time frame-step data outside ADRP range");
+-    uint32_t imm = (uint32_t)pages & 0x1fffff;
+-    return 0x90000000u | ((imm & 3u) << 29) | ((imm >> 2) << 5) | (rd & 31u);
+-}
+-static uint32_t adrp_x9(uint64_t site, uint64_t target) { return adrp_reg(9, site, target); }
+-
+-/* iOS cannot write code pages at run time: tools/export (TOTK_EXPORT_IOS, runtime/loader.c) runs these same patches on the
+-   Mac and the patched text is embedded in the app. On the device the loader only checks that the patched words are there. */
+-#if TARGET_OS_IPHONE
+-#define CODE_PATCHED_AT_BUILD 1
+-#else
+-#define CODE_PATCHED_AT_BUILD 0
+-#endif
+-
+-static void put_word(Module *m, uint64_t off, uint32_t word, const char *what) {
+-    if (!CODE_PATCHED_AT_BUILD) { memcpy(m->base + off, &word, 4); return; }
+-    uint32_t have;
+-    memcpy(&have, m->base + off, 4);
+-    if (have != word) {
+-        fprintf(stderr, "[totk] %s main+%#llx: embedded %08x, expected patched %08x\n", what, (unsigned long long)off, have, word);
+-        runtime_fail("embedded main text was not patched at build time (ios/tools/build_embed.sh)");
++    (void)now_ns;
++    if(dynamic_limits){int native=atomic_load(&output_mode)==2;
++        static int was=-1;if(was!=native){was=native;fprintf(stderr,"[kirby] per-frame dynamic limits: native=%d at %p\n",native,(void *)dynamic_limits);}
++        atomic_store(dynamic_limits,native?pack(2560,1440):pack(1920,1080));
++        atomic_store(dynamic_limits+1,native?pack(2560,1440):pack(1440,810));
+     }
+ }
+-
+-static void patch_realtime(Module *m) {
+-    /* The loader reserved a writable page immediately after main's image.
+-       No game allocation or rewritten-code veneer can overlap this page. */
+-    uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
+-    if (data_off + 0x4000 != m->size || data_off & 0xfff) runtime_fail("real-time frame-step page layout");
+-    static const struct { uint64_t off; uint32_t original; } sites[] = {
+-        {GAME_ADDR(0x7a83f4),0x1e220020}, {GAME_ADDR(0x7a83f8),0x52a84e08}, {GAME_ADDR(0x7a83fc),0x1e270101},
+-        {GAME_ADDR(0x7a8400),0x1e2c1002}, {GAME_ADDR(0x7a840c),0x1e211801}, {GAME_ADDR(0x7a8410),0x1e220800},
+-        {GAME_ADDR(0x8f68b8),0xbd425e60}, {GAME_ADDR(0x8f68bc),0x1e2c1001},
+-        {GAME_ADDR(0x8f68cc),0x5e21d800}, {GAME_ADDR(0x8f68d0),0x1e210800}
++int runtime_output_res(unsigned *w, unsigned *h) { (void)w; (void)h; return 0; }
++uint64_t runtime_output_res_extra_bytes(void) { return 512ULL << 20; }
++static uint32_t branch(uint64_t pc,uint64_t dst){
++    int64_t d=(int64_t)dst-(int64_t)pc;
++    if((d&3)||d<-(1<<27)||d>=(1<<27))runtime_fail("Kirby output branch range");
++    return 0x14000000|((uint32_t)(d>>2)&0x3ffffff);
++}
++static uint32_t adrp(unsigned reg,uint64_t pc,uint64_t dst){
++    int64_t d=(int64_t)(dst>>12)-(int64_t)(pc>>12);
++    if(d<-(1<<20)||d>=(1<<20))runtime_fail("Kirby output data range");
++    uint32_t v=(uint32_t)d&0x1fffff;return 0x90000000|((v&3)<<29)|((v>>2)<<5)|reg;
++}
++/* The game uses these 60 Hz tick counts both for its sleep deadline and
++ * simulation scheduling. Reduce only the 30 fps entry to one tick; elapsed
++ * tick accounting still catches up when a user selects 30+30 interpolation. */
++static void frame_pacing_patch(uint32_t *ticks) {
++    for(unsigned i=0;i<6;i++)if(ticks[i]!=i+1)runtime_fail("Kirby frame pacing table mismatch");
++    ticks[1]=1;
++}
++void runtime_game_patches(Module *m) {
++    static const struct {uint64_t off;uint32_t old,word;} sites[]={
++    {0x6c688, 0x52808706, 0x5280b406},
++    {0x6c68c, 0x32190fe5, 0x52814005},
++    {0x171bbc, 0x52808703, 0x5280b403},
++    {0x171bc4, 0x32190fe2, 0x52814002},
++    {0x171bf8, 0x52808703, 0x5280b403},
++    {0x171c00, 0x32190fe2, 0x52814002},
++    {0x171c50, 0x52808705, 0x5280b405},
++    {0x171c54, 0x32190fe4, 0x52814004},
++    {0x171cac, 0x52804385, 0x52805a05},
++    {0x171cb0, 0x321a0fe4, 0x5280a004},
++        {0x1b8bfc,0x52808703,0x5280b403},
++        {0x1b8c04,0x32190fe2,0x52814002},
++    {0x24e588, 0x52808705, 0x5280b405},
++    {0x24e58c, 0x32190fe4, 0x52814004},
++    {0x24ea68, 0x52808705, 0x5280b405},
++    {0x24ea6c, 0x32190fe4, 0x52814004},
++    {0x24fe98, 0x52808718, 0x5280b418},
++    {0x24fea0, 0x32190fe4, 0x52814004},
++    {0x24fee0, 0x32190fe4, 0x52814004},
++    {0x2502b0, 0x52808705, 0x5280b405},
++    {0x2502b4, 0x32190fe4, 0x52814004},
++    {0x250518, 0x52808716, 0x5280b416},
++    {0x250520, 0x32190fe4, 0x52814004},
++    {0x250588, 0x32190fe4, 0x52814004},
++    {0x2505d4, 0x32190fe4, 0x52814004},
++    {0x250b34, 0x52808705, 0x5280b405},
++    {0x250b38, 0x32190fe4, 0x52814004},
++    {0x251318, 0x52808705, 0x5280b405},
++    {0x25131c, 0x32190fe4, 0x52814004},
++        {0x7b5c,0x52a75814,0x52a95814},
++        {0x6917c,0x52a28001,0x52a48001},
++        {0x9fa0c,0x52b8b408,0x52bab408},
++        {0x9f930,0x52b8b408,0x52bab408},
++        {0x9fb28,0x52b8b408,0x52bab408},
++        {0x9fc14,0x52b8b408,0x52bab408},
++        {0x9fcd4,0x52b8b416,0x52bab416},
+     };
+-    for (size_t i = 0; i < sizeof sites / sizeof *sites; i++) {
+-        uint32_t word = 0;
+-        if (sites[i].off + 4 > m->text_end) runtime_fail("real-time frame-step site outside main text");
+-        memcpy(&word, m->base + sites[i].off, 4);
+-        if (CODE_PATCHED_AT_BUILD) break;   /* checked against the patched words below */
+-        if (word != sites[i].original) {
+-            fprintf(stderr,"[totk] real-time frame-step main+%#llx: found %08x expected %08x\n",
+-                    (unsigned long long)sites[i].off, word, sites[i].original);
+-            runtime_fail("real-time frame-step requires matching game-version original instructions");
+-        }
++    uint64_t data=(m->file_size+0x3fff)&~0x3fffULL,stub=(m->file_size+15)&~15ULL;
++    if(data+0x4000!=m->size||stub+12>data)runtime_fail("Kirby output veneer layout");
++    uint32_t word;memcpy(&word,m->base+0x171ed0,4);
++    if(word!=0xf9400108)runtime_fail("Kirby selected-resolution instruction mismatch");
++    for(unsigned i=0;i<sizeof sites/sizeof *sites;i++){
++        memcpy(&word,m->base+sites[i].off,4);
++        if(word!=sites[i].old)runtime_fail("Kirby output capacity instruction mismatch");
+     }
+-    const uint32_t nop = 0xd503201f;
+-    uint32_t repl[] = {
+-        adrp_x9((uintptr_t)m->base + GAME_ADDR(0x7a83f4), (uintptr_t)m->base + data_off),
+-        0xbd400120, /* ldr s0, [x9]       : ratio = dt * 30 */
+-        0xbd400521, /* ldr s1, [x9, #4]   : dt in seconds  */
+-        nop, nop, nop,
+-        adrp_x9((uintptr_t)m->base + GAME_ADDR(0x8f68b8), (uintptr_t)m->base + data_off),
+-        0xbd400120, /* global ratio, same shared value */
+-        nop, nop
+-    };
+-    for (size_t i = 0; i < sizeof sites / sizeof *sites; i++)
+-        put_word(m, sites[i].off, repl[i], "real-time frame step");
+-    frame_step_data = (_Atomic uint64_t *)(void *)(m->base + data_off);
+-    atomic_store(frame_step_data, frame_step_bits(1.0f / 60.0f));
+-    fprintf(stderr,"[totk] real-time frame step: %zu verified instructions; initial 16.67 ms, sampled at each present\n",
+-            sizeof sites / sizeof *sites);
++    for(unsigned i=0;i<12;i++)if(m->base[stub+i])runtime_fail("Kirby output veneer padding not empty");
++    frame_pacing_patch((void *)(m->base+0x39a48c));
++    fprintf(stderr,"[kirby] base frame pacing: 30 fps entry changed to 60 Hz single-tick scheduling\n");
++    uint32_t veneer[]={adrp(8,stub,data),0xf9400108,branch(stub+8,0x171ed4)};
++    memcpy(m->base+stub,veneer,sizeof veneer);
++    word=branch(0x171ed0,stub);memcpy(m->base+0x171ed0,&word,4);
++    for(unsigned i=0;i<sizeof sites/sizeof *sites;i++)memcpy(m->base+sites[i].off,&sites[i].word,4);
++    dynamic_limits=(void *)(m->base+0x527f38);
++    output_size=(void *)(m->base+data);atomic_store(output_size,pack(1920,1080));
++    fprintf(stderr,"[kirby] output capacity 2560x1440; guarded native resize selector installed\n");
+ }
+-
+-/* Render resolution (TOTK_RENDER_RES=<w>x<h>, e.g. 960x540).
+-   main+0xc63064 reads the scene render size {w, h} from the game's parameter tree (main+0xc6325c: handheld 1280x720,
+-   docked 1600x900), converts it to floats and stores it in the renderer at +0xcc4 / +0xcc8; every scene render target
+-   is sized from there (traced with TOTK_SIZE_CHAIN: the per-frame render-target requests at main+0xa2818c take their
+-   size from this view). The community 1008p / 1080p exefs patches change the same place. Here the size comes from the
+-   loader's data page after main (the real-time frame-step page, +16): three instructions,
+-     main+0xc630bc  scvtf s0, s8              -> adrp x9, <page>
+-     main+0xc630c4  str s0, [x19, #0xcc4]     -> ldp s0, s1, [x9, #16]
+-     main+0xc630c8  scvtf s1, s9              -> str s0, [x19, #0xcc4]
+-   and the store of s1 at main+0xc630d8 stays. The size read from the parameter is then not used. The host writes the
+-   page at load, so on the phone (code patched at build) the size is still chosen at run time: TOTK_RENDER_RES, or the
+-   game's handheld 1280x720 when unset / 0 (the phone always reports handheld mode). The game's final passes scale the
+-   scene to its output (1280x720 handheld). */
+-static const GamePatch render_res_sites[3] = {
+-    {GAME_ADDR(0xc630bc), 0x5e21d900, 0, "scvtf s0, s8 -> adrp x9, <data page>"},
+-    {GAME_ADDR(0xc630c4), 0xbd0cc660, 0x2d420520, "str s0, [x19, #0xcc4] -> ldp s0, s1, [x9, #16]"},
+-    {GAME_ADDR(0xc630c8), 0x5e21d921, 0xbd0cc660, "scvtf s1, s9 -> str s0, [x19, #0xcc4]"},
+-};
+-static int render_res(unsigned *w, unsigned *h) {
+-    const char *e = getenv("TOTK_RENDER_RES");
+-    if (!e || !*e || !strcmp(e, "0")) return 0;
+-    if (sscanf(e, "%ux%u", w, h) != 2 || *w < 64 || *h < 64 || *w > 4096 || *h > 4096) runtime_fail("TOTK_RENDER_RES must be <width>x<height>");
+-    return 1;
++int runtime_output_mode_cycle(void) {
++    extern void dm_gfx_set_flag(const char *,int);
++    int mode=(atomic_load(&output_mode)+1)%3;
++    if(output_size)atomic_store(output_size,mode==2?pack(2560,1440):pack(1920,1080));
++    dm_gfx_set_flag("mfx_upscale",mode==1);
++    dm_gfx_set_flag("mfx_output",mode==1);
++    atomic_store(&output_mode,mode);
++    fprintf(stderr,"[kirby] picture mode %d: %s\n",mode,mode==1?"MetalFX 2K":mode==2?"native 2K":"off (1920x1080)");
++    return mode;
+ }
+-static void patch_render_res(Module *m) {
+-    uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
+-    unsigned w = 1280, h = 720; int set = render_res(&w, &h);
+-    if (!CODE_PATCHED_AT_BUILD && !set) return;   /* Mac: the game's own size unless asked */
+-    uint32_t want[3] = {adrp_x9((uintptr_t)m->base + render_res_sites[0].offset, (uintptr_t)m->base + data_off),
+-                        render_res_sites[1].replacement, render_res_sites[2].replacement};
+-    if (CODE_PATCHED_AT_BUILD) {
+-        uint32_t have; memcpy(&have, m->base + render_res_sites[0].offset, 4);
+-        if (have == render_res_sites[0].original) { fprintf(stderr, "[totk] render resolution: the game's own (not patched at build)\n"); return; }
+-        for (int i = 0; i < 3; i++) put_word(m, render_res_sites[i].offset, want[i], "render resolution");   /* checks */
+-    } else {
+-        for (int i = 0; i < 3; i++) {
+-            uint32_t word; memcpy(&word, m->base + render_res_sites[i].offset, 4);
+-            if (word != render_res_sites[i].original) {
+-                fprintf(stderr, "[totk] render resolution patch main+%#llx: found %08x, expected %08x (%s)\n",
+-                        (unsigned long long)render_res_sites[i].offset, word, render_res_sites[i].original, render_res_sites[i].what);
+-                runtime_fail("render resolution patch: main does not match the selected game version");
+-            }
+-        }
+-        for (int i = 0; i < 3; i++) memcpy(m->base + render_res_sites[i].offset, &want[i], 4);
+-    }
+-    float v[2] = {(float)w, (float)h};
+-    memcpy(m->base + data_off + 16, v, sizeof v);
+-    fprintf(stderr, "[totk] render resolution patch: scene render size %ux%u%s (3 instructions at main+0xc630bc, value on the data page)\n",
+-            w, h, set ? "" : " (the game's handheld size; TOTK_RENDER_RES not set)");
+-}
+-
+-/* Output resolution ("true 2K", 2026-10-17; key 3 switches it while playing). Two sizes are 1920x1080 in the game:
+-   1. The swapchain. nnMain writes the framework's display size as a constant before creating the graphics framework
+-      ("NvInitializeGraphics"); the framework's system object keeps it at +0x9c / +0xa0 and creates the swapchain from it
+-      (main+0xe9d8c0). It is made the largest output size (2560x1440), fixed for the run:
+-        main+0xe996ac  mov  x8, #0x780            (1920)   -> mov  x8, #w
+-        main+0xe996b0  movk x8, #0x438, lsl #32   (1080)   -> movk x8, #h, lsl #32
+-   2. The output size of the graphics parameters (docked and handheld entries, with inheritance: +0x38 of the entry, getter
+-      main+0xc632b0; +0x30 is the scene render size, 1600x900 docked). main+0xc63064 reads it for the current mode and gives it
+-      to the window crop and to the renderer's display slot 0 (main+0xc631e0 -> main+0xc6322c, renderer +0x388); the canvas the
+-      game composes the frame in is that slot times the display scale (main+0x93b9c4, scale 1.0), and the final copy to the
+-      swapchain draws that size. It is read from the loader's data page instead (+32, {w, h}), and the renderer the routine
+-      works on is stored next to it (+40) so the host can ask for a new layout (the getter has no side effects):
+-        main+0xc630a4  mov  x0, x20               -> adrp x21, <data page>
+-        main+0xc630a8  bl   main+0xc632b0         -> str  x19, [x21, #40]   (x19 = the renderer)
+-        main+0xc630ac  ldr  x21, [x0]             -> ldr  x21, [x21, #32]   (the output size)
+-   Switching while playing (key 3, runtime_output_res_toggle): main+0x1185358 (called from main+0x1185310, an event handler
+-   the renderer registers by name hash at main+0xec86c8; also main+0xc5fd00) re-runs main+0xc63064 when the operation mode
+-   changed or bit 0x200 of the renderer's +0xca4 is set, then clears the bit and flags the displays for rebuilding (+0xca0
+-   bit 0) -- the path a Switch takes when it is docked or undocked. The host writes the other size to the data page, sets
+-   that bit and posts the "operation mode changed" notification (oe message 30; the mode itself stays docked) so that the
+-   handler runs; the game lays out its crop, canvas and UI again at the new size. At 1920x1080 the picture fills the
+-   swapchain's top-left (the crop says so) and the present scales it to the window (MetalFX when the window is bigger: the
+-   2K output). The scene keeps its render size either way; its final upscale (MetalFX on the Mac, shader a3a570eb) writes
+-   the canvas.
+-   TOTK_OUTPUT_RES: auto (the Mac default) = a 2560x1440 swapchain and heaps so that key 3 can switch at any time, starting at
+-   1920x1080 (the user's choice, 2026-10-17: "default 1080p"; needs the HeapDef overlay built by make romfs-patches; without
+-   it the game's own 1920x1080, no switching); <w>x<h> = that largest size, starting there (TOTK_OUTPUT_RES=2560x1440 starts
+-   in true 2K); 0 = the game's own 1920x1080, no switching. The iOS export (TOTK_EXPORT_IOS) only takes an explicit size. Decided once;
+-   every caller sees the same answer. Mac only. */
+-static int output_full_at_start = 1;
+-static int output_res_auto(unsigned *w, unsigned *h) {
+-#if TARGET_OS_OSX
+-    if (getenv("TOTK_EXPORT_IOS")) return 0;
+-    const char *dir = getenv("TOTK_ROMFS_PATCHES_OUT"); char path[4096];
+-    snprintf(path, sizeof path, "%s/2560x1440/manifest.tsv", dir ? dir : "extracted/" TOTK_GAME_DIR "/romfs-patches-out");
+-    FILE *f = fopen(path, "r");
+-    if (!f) { fprintf(stderr, "[totk] true 2K (TOTK_OUTPUT_RES=auto): off, %s is missing (make romfs-patches)\n", path); return 0; }
+-    fclose(f);
+-    *w = 2560; *h = 1440; output_full_at_start = 0;
+-    fprintf(stderr, "[totk] true 2K (TOTK_OUTPUT_RES=auto): starts at 1920x1080 (the default); key 3 switches between 1920x1080 and 2560x1440\n");
+-    return 1;
+-#else
+-    (void)w; (void)h; return 0;
+-#endif
+-}
+-static int output_res(unsigned *w, unsigned *h) {
+-    static int decided, on; static unsigned cw, ch;
+-    if (!decided) {
+-        const char *e = getenv("TOTK_OUTPUT_RES");
+-        if (e && !strcmp(e, "0")) on = 0;
+-        else if (!e || !*e || !strcmp(e, "auto")) on = output_res_auto(&cw, &ch);
+-        else if (sscanf(e, "%ux%u", &cw, &ch) != 2 || cw < 640 || ch < 360 || cw > 7680 || ch > 4320) runtime_fail("TOTK_OUTPUT_RES must be <width>x<height> (640x360 .. 7680x4320), auto or 0");
+-        else on = 1;
+-        decided = 1;
+-    }
+-    if (on) { *w = cw; *h = ch; }
+-    return on;
+-}
+-int runtime_output_res(unsigned *w, unsigned *h) { return !CODE_PATCHED_AT_BUILD && output_res(w, h); }
+-/* The canvas-sized render targets come from agl::utl::DynamicTextureAllocator (initialised once, main+0x8e1a98): a single
+-   heap of the HeapDef size "DynamicTextureAllocatorMem" (113664 KiB), carved from the "Graphics" heap (201728 KiB, the heap
+-   of gsys::SystemTask), with no parent to grow from. At 2560x1440 the title runs out of it (the allocator main+0x798934
+-   then dereferences the null block, main+0x799390). The HeapDef overlay for the output size (scripts/make_output_res_overlay.py,
+-   loaded by runtime/romfs.c) scales DynamicTextureAllocatorMem with the output pixels, rounded up to whole MiB, and grows
+-   Graphics by the same amount; the application pool grows by it too (rounded up to 2 MiB), so no other heap shrinks. */
+-uint64_t runtime_output_res_extra_bytes(void) {
+-    unsigned w, h;
+-    if (!runtime_output_res(&w, &h)) return 0;
+-    double ratio = (double)w * h / (1920.0 * 1080.0);
+-    if (ratio <= 1.0) return 0;
+-    uint64_t kib = (uint64_t)ceil(113664.0 * ratio / 1024.0) * 1024 - 113664;
+-    return kib << 10;
+-}
+-enum { DP_OUTPUT_SIZE = 32, DP_RENDERER = 40 };   /* data page: the output size {w, h} the game reads; the renderer it stores */
+-static uint8_t *output_page;
+-static unsigned output_w, output_h;   /* the largest output size (the swapchain) */
+-static uint64_t pack_size(unsigned w, unsigned h) { return (uint64_t)h << 32 | w; }
+-static void patch_output_res(Module *m) {
+-    unsigned w, h;
+-    if (CODE_PATCHED_AT_BUILD || !output_res(&w, &h)) return;
+-    uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
+-    if (data_off + 0x4000 != m->size || data_off & 0xfff) runtime_fail("output resolution data page layout");
+-    const GamePatch sites[5] = {
+-        {GAME_ADDR(0xe996ac), 0xd280f008, 0xd2800000u | (w << 5) | 8u, "mov x8, #0x780 (1920) -> mov x8, #w (the swapchain)"},
+-        {GAME_ADDR(0xe996b0), 0xf2c08708, 0xf2c00000u | (h << 5) | 8u, "movk x8, #0x438, lsl #32 (1080) -> movk x8, #h, lsl #32"},
+-        {GAME_ADDR(0xc630a4), 0xaa1403e0, adrp_reg(21, (uintptr_t)m->base + GAME_ADDR(0xc630a4), (uintptr_t)m->base + data_off), "mov x0, x20 -> adrp x21, <data page>"},
+-        {GAME_ADDR(0xc630a8), GAME_OUTPUT_CALL_WORD, 0xf90016b3, "bl main+0xc632b0 (the parameters' output size) -> str x19, [x21, #40] (the renderer)"},
+-        {GAME_ADDR(0xc630ac), 0xf9400015, 0xf94012b5, "ldr x21, [x0] -> ldr x21, [x21, #32] (the output size)"},
+-    };
+-    for (int i = 0; i < 5; i++) {
+-        uint32_t word; memcpy(&word, m->base + sites[i].offset, 4);
+-        if (word != sites[i].original) {
+-            fprintf(stderr, "[totk] output resolution patch main+%#llx: found %08x, expected %08x (%s)\n", (unsigned long long)sites[i].offset, word, sites[i].original, sites[i].what);
+-            runtime_fail("output resolution patch: main does not match the selected game version");
+-        }
+-    }
+-    output_page = m->base + data_off; output_w = w; output_h = h;
+-    atomic_store((_Atomic uint64_t *)(void *)(output_page + DP_OUTPUT_SIZE), output_full_at_start ? pack_size(w, h) : pack_size(1920, 1080));
+-    atomic_store((_Atomic uint64_t *)(void *)(output_page + DP_RENDERER), 0);
+-    for (int i = 0; i < 5; i++) memcpy(m->base + sites[i].offset, &sites[i].replacement, 4);
+-    fprintf(stderr, "[totk] output resolution patch: swapchain %ux%u (main+0xe996ac), the game's output %s from the data page (main+0xc630a4); texture heap and Graphics +%llu KiB (HeapDef overlay)\n",
+-            w, h, output_full_at_start ? "at that size" : "1920x1080 for now", (unsigned long long)(runtime_output_res_extra_bytes() >> 10));
+-}
+-/* Two-state output-size helper retained for internal use: switch between the largest size and 1920x1080. The renderer
+-   lays out again at the next frame (see patch_output_res). */
+-int runtime_output_res_toggle(void) {
+-    if (!output_page) { fprintf(stderr, "[totk] key 3: switching the output size needs a 2K-capable start (TOTK_OUTPUT_RES auto with the HeapDef overlay, or <w>x<h>)\n"); return 0; }
+-    _Atomic uint64_t *size = (_Atomic uint64_t *)(void *)(output_page + DP_OUTPUT_SIZE);
+-    int full = atomic_load(size) != pack_size(output_w, output_h);
+-    atomic_store(size, full ? pack_size(output_w, output_h) : pack_size(1920, 1080));
+-    uint64_t renderer = atomic_load((_Atomic uint64_t *)(void *)(output_page + DP_RENDERER));
+-    const char *before = "";
+-    if (renderer) {
+-        uint32_t old = __atomic_fetch_or((uint32_t *)(uintptr_t)(renderer + 0xca4), 0x200u, __ATOMIC_SEQ_CST);
+-        before = old & 0x200u ? " (the previous switch was still pending)" : "";
+-        runtime_oe_push_message(30);   /* nn::oe "operation mode changed": the game runs its display handler (main+0x1185310) */
+-    }
+-    fprintf(stderr, "[totk] key 3: the game's output %ux%u (%s)%s%s\n", full ? output_w : 1920u, full ? output_h : 1080u,
+-            full ? "true 2K: the canvas and the UI at that size" : "the 2K output: 1080p canvas, MetalFX scales it at present",
+-            renderer ? " from the next layout" : "; the game has not laid out its displays yet, it takes this size when it does", before);
+-    return 1;
+-}
+-/* Key 3: cycle the active 2K presentation path. The normal startup is 1080p game output with the MetalFX output scaler
+-   enabled; native 2K switches the game's canvas/UI to 2560x1440; off returns to 1080p and disables the output scaler. */
+-int runtime_output_mode_cycle(void) {
+-    if (!output_page) {
+-        fprintf(stderr, "[totk] key 3: 2K mode cycling needs a 2K-capable start (TOTK_OUTPUT_RES=auto with the HeapDef overlay, or <w>x<h>)\n");
+-        return 0;
+-    }
+-    _Atomic uint64_t *size = (_Atomic uint64_t *)(void *)(output_page + DP_OUTPUT_SIZE);
+-    int full = atomic_load(size) == pack_size(output_w, output_h);
+-    extern int mfxup_output_enabled(void);
+-    extern void dm_gfx_set_flag(const char *name, int value);
+-    int next_full, next_mfx;
+-    const char *name;
+-    if (full) { next_full = 0; next_mfx = 0; name = "关闭 2K"; }
+-    else if (mfxup_output_enabled()) { next_full = 1; next_mfx = 0; name = "原生 2K"; }
+-    else { next_full = 0; next_mfx = 1; name = "MetalFX 2K"; }
+-    if (full != next_full) runtime_output_res_toggle();
+-    dm_gfx_set_flag("mfx_output", next_mfx);
+-    dm_gfx_set_flag("mfx_upscale", next_mfx);
+-    fprintf(stderr, "[totk] key 3: %s\n", name);
+-    return 1;
+-}
+-
+-/* Diagnostic (Mac): TOTK_TRAP_AT=<main offset> writes brk #0 there; the crash handler (runtime/loader.c, SIGTRAP) then prints
+-   the registers and the call chain at that moment, plus what TOTK_CRASH_MEM / TOTK_CRASH_HEAPFIND / TOTK_CRASH_HEAPWALK ask for,
+-   and exits: "stop here and show me the state" without a debugger. */
+-static void patch_trap(Module *m) {
+-    const char *e = getenv("TOTK_TRAP_AT");
+-    if (CODE_PATCHED_AT_BUILD || !e || !*e) return;
+-    uint64_t off = strtoull(e, NULL, 0);
+-    if (off & 3 || off + 4 > m->text_end) runtime_fail("TOTK_TRAP_AT must be a 4-byte aligned offset in main's text");
+-    uint32_t brk = 0xd4200000, was;
+-    memcpy(&was, m->base + off, 4);
+-    memcpy(m->base + off, &brk, 4);
+-    fprintf(stderr, "[totk] TOTK_TRAP_AT: brk at main+%#llx (was %08x); the game stops there with a register dump\n", (unsigned long long)off, was);
+-}
+-
+-static void check_site(const Module *m, const GamePatch *p) {
+-    if (p->offset + 4 > m->text_end) runtime_fail("60 FPS patch site outside the main text segment");
+-    uint32_t word;
+-    memcpy(&word, m->base + p->offset, sizeof word);
+-    if (word != p->original) {
+-        fprintf(stderr, "[totk] 60 FPS patch main+%#llx: found %08x, expected %08x (%s)\n",
+-                (unsigned long long)p->offset, word, p->original, p->what);
+-        runtime_fail("60 FPS patch: main does not match the selected game version");
+-    }
+-}
+-
+-void runtime_game_patches(Module *m) {
+-    runtime_survey_init(m);
+-    const size_t n = sizeof fps60_sites / sizeof fps60_sites[0];
+-    if (strcmp(m->name, "main")) runtime_fail("game patches expect the main module");
+-    if (CODE_PATCHED_AT_BUILD) {
+-        /* Embedded variant: the code was patched at build time (ios/tools/build_app.sh exports with the real-time frame
+-           step and the 60 FPS patch), so the phone is not held at the shipping 30 fps; here we only verify the words. */
+-        patch_realtime(m);
+-        patch_render_res(m);
+-        for (size_t i = 0; i < n; i++) {
+-            uint32_t word;
+-            memcpy(&word, m->base + fps60_sites[i].offset, sizeof word);
+-            if (word != fps60_sites[i].replacement) {
+-                fprintf(stderr, "[totk] 60 FPS patch main+%#llx: found %08x, expected the patched %08x (%s)\n",
+-                        (unsigned long long)fps60_sites[i].offset, word, fps60_sites[i].replacement, fps60_sites[i].what);
+-                runtime_fail("60 FPS patch: embedded main was not exported with TOTK_FPS60 on");
+-            }
+-        }
+-        fprintf(stderr, "[totk] embedded main: real-time frame step and 60 FPS patch (%zu instructions) applied at build time\n", n);
+-        return;
+-    }
+-    if (realtime_enabled()) patch_realtime(m);
+-    else fprintf(stderr,"[totk] real-time frame step off (TOTK_REALTIME=0)\n");
+-    patch_render_res(m);
+-    patch_output_res(m);
+-    patch_trap(m);
+-    if (!fps60_enabled()) {
+-        fprintf(stderr, "[totk] 60 FPS patch off (TOTK_FPS60=0): shipping present interval range 2..3\n");
+-        return;
+-    }
+-    for (size_t i = 0; i < n; i++) check_site(m, &fps60_sites[i]);   /* verify all before writing any */
+-    for (size_t i = 0; i < n; i++) memcpy(m->base + fps60_sites[i].offset, &fps60_sites[i].replacement, 4);
+-    fprintf(stderr, "[totk] %s 60 FPS patch: %zu instructions (interval range 1..3)\n", TOTK_GAME_VERSION, n);
+-}
+--- a/runtime/movie_host.c
++++ b/runtime/movie_host.c
+@@ -30,6 +30,12 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <time.h>
++#ifdef KIRBY_FFMPEG
++#include <libavcodec/avcodec.h>
++#include <libavutil/imgutils.h>
++#include <libswscale/swscale.h>
++#include <libswresample/swresample.h>
++#endif
+ #if !__has_include(<vpx/vpx_decoder.h>)
+ /* No libvpx for this target (the iPhone build has none yet): no override, so the movie library runs its own decoder,
+    which still aborts at the first cutscene there. Build libvpx for iOS (or use VideoToolbox's VP9) to enable this file. */
+@@ -53,9 +59,14 @@
+ typedef struct { int index, offset, size; int64_t time; unsigned flags; } Pending;
+ typedef struct {
+     void *guest;                         /* the movie::Decoder object */
+-    int format, configured, started, w, h, eos_in, format_sent, last_error;
++    int type, format, configured, started, w, h, eos_in, format_sent, last_error;
+     void **events;                       /* DecoderEvents: EventType* per EV_* */
+     vpx_codec_ctx_t vpx; int vpx_live;
++#ifdef KIRBY_FFMPEG
++    AVCodecContext *av; AVFrame *avframe; AVPacket *avpacket;
++    struct SwsContext *sws; SwrContext *swr;
++    int sample_rate, channels;
++#endif
+     uint8_t *in[IN_BUFS]; int in_free[IN_BUFS], nin_free;
+     Pending pending[IN_BUFS]; int npending;
+     uint8_t *out[OUT_BUFS]; int out_bytes[OUT_BUFS], out_held[OUT_BUFS];
+@@ -103,8 +114,10 @@
+         need_symbol((void **)&G.buf_set_data, "_ZN5movie6Buffer18SetDataAndCapacityEPvm");
+         need_symbol((void **)&G.buf_base, "_ZNK5movie6Buffer4BaseEv");
+         need_symbol((void **)&G.buf_capacity, "_ZNK5movie6Buffer8CapacityEv");
++        need_symbol((void **)&G.buf_size, "_ZNK5movie6Buffer4SizeEv");
+         need_symbol((void **)&G.md_find_int32, "_ZNK5movie9MediaData9FindInt32EPKcPi");
+         need_symbol((void **)&G.md_find_string, "_ZNK5movie9MediaData10FindStringEPKcPS2_");
++        need_symbol((void **)&G.md_find_buffer, "_ZNK5movie9MediaData10FindBufferEPKcPPNS_6BufferE");
+         need_symbol((void **)&G.md_set_int32, "_ZN5movie9MediaData8SetInt32EPKci");
+         need_symbol((void **)&G.md_set_rect, "_ZN5movie9MediaData7SetRectEPKciiii");
+         need_symbol((void **)&G.md_set_string, "_ZN5movie9MediaData9SetStringEPKcS2_");
+@@ -129,7 +142,7 @@
+ static void note(Movie *m, Signals *s, int which) { if (m->events && m->events[which] && s->n < 8) s->ev[s->n++] = m->events[which]; }
+ static void fire(const Signals *s) { for (int i = 0; i < s->n; i++) G.signal_event(s->ev[i]); }
+ 
+-static int frame_bytes(const Movie *m) { return m->w * m->h + (m->w / 2) * (m->h / 2) * 2; }
++static int frame_bytes(const Movie *m) { return m->type == 4 ? 65536 : m->w * m->h + (m->w / 2) * (m->h / 2) * 2; }
+ 
+ /* I420 (libvpx) -> packed NV12: Y rows, then rows of interleaved U, V. */
+ static void to_nv12(const vpx_image_t *img, uint8_t *dst, int w, int h) {
+@@ -174,6 +187,61 @@
+     memmove(m->decoded, m->decoded + 1, (size_t)--m->ndecoded * sizeof m->decoded[0]);
+     m->ready[m->nready++] = d; note(m, s, EV_OUTPUT);
+ }
++#ifdef KIRBY_FFMPEG
++static void av_error(const char *operation, int err) {
++    char message[AV_ERROR_MAX_STRING_SIZE]; av_strerror(err, message, sizeof message);
++    LOG("%s: %s", operation, message);
++}
++static void av_receive(Movie *m, Signals *s, int64_t pts) {
++    int err;
++    while ((err = avcodec_receive_frame(m->av, m->avframe)) == 0) {
++        int slot = free_out(m);
++        if (slot < 0) { LOG("decoder output queue full"); m->errors++; break; }
++        int bytes = 0;
++        if (m->type == 1) {
++            if (m->avframe->width != m->w || m->avframe->height != m->h) {
++                LOG("video resolution changed from %dx%d to %dx%d", m->w, m->h, m->avframe->width, m->avframe->height);
++                m->errors++; break;
++            }
++            m->sws = sws_getCachedContext(m->sws, m->w, m->h, m->avframe->format,
++                                          m->w, m->h, AV_PIX_FMT_NV12, SWS_BILINEAR, NULL, NULL, NULL);
++            if (!m->sws) runtime_fail("H264 pixel conversion");
++            uint8_t *planes[4] = {m->out[slot], m->out[slot] + (size_t)m->w * m->h};
++            int strides[4] = {m->w, m->w};
++            sws_scale(m->sws, (const uint8_t *const *)m->avframe->data, m->avframe->linesize,
++                      0, m->h, planes, strides);
++            bytes = frame_bytes(m);
++        } else {
++            if (!m->swr) {
++                AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
++                int rc = swr_alloc_set_opts2(&m->swr, &stereo, AV_SAMPLE_FMT_S16, m->sample_rate,
++                    &m->avframe->ch_layout, m->avframe->format, m->avframe->sample_rate, 0, NULL);
++                if (rc < 0 || swr_init(m->swr) < 0) runtime_fail("AAC audio conversion");
++            }
++            int max_samples = frame_bytes(m) / (m->channels * (int)sizeof(int16_t));
++            uint8_t *dst[1] = {m->out[slot]};
++            int samples = swr_convert(m->swr, dst, max_samples,
++                                      (const uint8_t *const *)m->avframe->extended_data, m->avframe->nb_samples);
++            if (samples < 0) { av_error("AAC conversion", samples); m->errors++; break; }
++            bytes = samples * m->channels * (int)sizeof(int16_t);
++        }
++        if (!m->format_sent) { m->format_sent = 1; note(m, s, EV_FORMAT); }
++        push_ready(m, s, slot, 0, pts, bytes);
++        m->frames++;
++        av_frame_unref(m->avframe);
++    }
++    if (err < 0 && err != AVERROR(EAGAIN) && err != AVERROR_EOF) { av_error("decoder receive", err); m->errors++; }
++}
++static void av_decode(Movie *m, Signals *s, const Pending *p) {
++    int err = av_new_packet(m->avpacket, p->size);
++    if (err < 0) runtime_fail("FFmpeg packet allocation");
++    memcpy(m->avpacket->data, m->in[p->index] + p->offset, (size_t)p->size);
++    err = avcodec_send_packet(m->av, m->avpacket);
++    av_packet_unref(m->avpacket);
++    if (err < 0) { av_error("decoder send", err); m->errors++; return; }
++    av_receive(m, s, p->time);
++}
++#endif
+ void movie_host_tick(void) {   /* lock order g_lock -> Movie.mu, as in destroy; events fire after both are released */
+     Signals s = {0};
+     pthread_mutex_lock(&g_lock);
+@@ -192,6 +260,11 @@
+     if (freeslots < need) return 0;
+     if (p->size > 0) {
+         uint64_t t0 = now_ns();
++        if (m->type != TYPE_VP9) {
++#ifdef KIRBY_FFMPEG
++            av_decode(m, s, p);
++#endif
++        } else {
+         vpx_codec_err_t e = vpx_codec_decode(&m->vpx, m->in[p->index] + p->offset, (unsigned)p->size, NULL, 0);
+         if (e != VPX_CODEC_OK) {
+             m->errors++; m->last_error = ST_ERROR; note(m, s, EV_ERROR);
+@@ -210,6 +283,7 @@
+                 m->frames++;
+             }
+         }
++        }
+         m->decode_ns += now_ns() - t0;
+         if (m->frames && m->frames % 300 == 0) LOG("%llu frames, decode %.2f ms per frame", (unsigned long long)m->frames, m->decode_ns / 1e6 / (double)m->frames);
+     }
+@@ -226,6 +300,10 @@
+ }
+ static void release_codec(Movie *m) {
+     if (m->vpx_live) { vpx_codec_destroy(&m->vpx); m->vpx_live = 0; }
++#ifdef KIRBY_FFMPEG
++    avcodec_free_context(&m->av); av_frame_free(&m->avframe); av_packet_free(&m->avpacket);
++    sws_freeContext(m->sws); m->sws = NULL; swr_free(&m->swr);
++#endif
+     for (int i = 0; i < IN_BUFS; i++) { free(m->in[i]); m->in[i] = NULL; }
+     for (int i = 0; i < OUT_BUFS; i++) { free(m->out[i]); m->out[i] = NULL; }
+     m->configured = m->started = 0; m->nin_free = m->npending = m->nready = m->ndecoded = 0; m->t0 = 0;
+@@ -239,19 +317,19 @@
+ typedef void (*ctor_fn)(void *, int, int, int, int);
+ static void h_ctor(void *obj, int type, int format, int mode, int priority) {
+     if (!g_ready) guest_init();
+-    if (type != TYPE_VP9 || mode != MODE_BUFFER) {
++    if ((type != TYPE_VP9 && type != 1 && type != 4) || mode != MODE_BUFFER) {
+         LOG("decoder type %d mode %d format %d: left to the library (only VP9 in buffer mode runs on the host)", type, mode, format);
+         ((ctor_fn)G.orig[MOVIE_CTOR])(obj, type, format, mode, priority); return;
+     }
+     Movie *m = calloc(1, sizeof *m); if (!m) runtime_fail("movie decoder allocation");
+-    m->guest = obj; m->format = format; pthread_mutex_init(&m->mu, NULL);
++    m->guest = obj; m->type = type; m->format = format; pthread_mutex_init(&m->mu, NULL);
+     pthread_mutex_lock(&g_lock); int i = 0;
+     while (i < MAX_MOVIES && g_movies[i] && g_movies[i]->guest != obj) i++;
+     if (i == MAX_MOVIES) runtime_fail("movie decoder table full");
+     if (g_movies[i]) { LOG("【红】decoder object %p reused without destruction", obj); release_codec(g_movies[i]); free(g_movies[i]); }
+     g_movies[i] = m; pthread_mutex_unlock(&g_lock);
+     ((void **)obj)[0] = G.vptr; ((void **)obj)[1] = m;
+-    LOG("VP9 decoder %p on the host (libvpx %s), output format %d", obj, vpx_codec_version_str(), format);
++    LOG("decoder %p type=%d format=%d on host", obj, type, format);
+ }
+ static void destroy(void *obj) {
+     pthread_mutex_lock(&g_lock); Movie *m = NULL;
+@@ -264,6 +342,7 @@
+     ((void **)obj)[0] = G.vptr; ((void **)obj)[1] = NULL;   /* what the library's destructor leaves (no DecoderImpl) */
+ }
+ typedef void (*obj_fn)(void *);
++static void h_ctor_kirby(void *obj,int type,int format,int mode){ LOG("Kirby decoder request type=%d format=%d mode=%d",type,format,mode); h_ctor(obj,type,format,mode,0); }
+ static void h_d2(void *obj) { if (!find(obj)) { ((obj_fn)G.orig[MOVIE_D2])(obj); return; } destroy(obj); }
+ /* Deleting destructor: free the host state, then the library's own deleting destructor frees the object (impl now 0). */
+ static void h_d0(void *obj) { if (find(obj)) destroy(obj); ((obj_fn)G.orig[MOVIE_D0])(obj); }
+@@ -272,9 +351,66 @@
+ static int h_configure(void *obj, void *format) {
+     Movie *m = find(obj); if (!m) return ((md_fn)G.orig[MOVIE_CONFIGURE])(obj, format);
+     if (!format) return ST_NULL;
+-    if (m->format != FORMAT_NV12) { LOG("【红】output format %d not implemented on the host (NV12 = 4 only)", m->format); return ST_UNSUPPORTED; }
+     const char *mime = NULL; int w = 0, h = 0;
+     G.md_find_string(format, "mime", &mime); G.md_find_int32(format, "width", &w); G.md_find_int32(format, "height", &h);
++    LOG("Kirby configure type=%d format=%d mime=%s %dx%d",m->type,m->format,mime?mime:"(none)",w,h);
++    if ((m->type == TYPE_VP9 || m->type == 1) && m->format != FORMAT_NV12) return ST_UNSUPPORTED;
++    if (m->type == 4 && m->format != 1) return ST_UNSUPPORTED;
++#ifdef KIRBY_FFMPEG
++    if (m->type == 1 || m->type == 4) {
++        enum AVCodecID codec_id = m->type == 1 ? AV_CODEC_ID_H264 : AV_CODEC_ID_AAC;
++        const char *expected = m->type == 1 ? "video/avc" : "audio/mp4a-latm";
++        if (!mime || strcmp(mime, expected)) return ST_UNSUPPORTED;
++        if (m->type == 1 && (w <= 0 || h <= 0 || w > 8192 || h > 8192 || ((w | h) & 1))) return ST_UNSUPPORTED;
++        pthread_mutex_lock(&m->mu);
++        release_codec(m); m->w = w; m->h = h;
++        G.md_find_int32(format, "sample-rate", &m->sample_rate);
++        G.md_find_int32(format, "channel-count", &m->channels);
++        if (m->type == 4) { if (!m->sample_rate) m->sample_rate = 48000; if (!m->channels) m->channels = 2; }
++        const AVCodec *codec = avcodec_find_decoder(codec_id);
++        if (!codec || !(m->av = avcodec_alloc_context3(codec))) runtime_fail("FFmpeg decoder allocation");
++        if (m->type == 1) { m->av->width = w; m->av->height = h; }
++        void *csd = NULL; const char *csd_key = NULL;
++        const char *keys[] = {"csd-0", "avcc", "avcC", "esds", "codec-specific-data"};
++        for (unsigned k = 0; k < sizeof keys / sizeof *keys; k++) {
++            void *candidate = NULL;
++            if (G.md_find_buffer(format, keys[k], &candidate) && candidate) { csd = candidate; csd_key = keys[k]; break; }
++        }
++        if (csd) {
++            size_t size = G.buf_size(csd);
++            const uint8_t *base = G.buf_base(csd);
++            LOG("codec specific data %s: %zu bytes (%02x %02x %02x %02x)", csd_key, size,
++                size > 0 ? base[0] : 0, size > 1 ? base[1] : 0, size > 2 ? base[2] : 0, size > 3 ? base[3] : 0);
++            if (m->type == 4 && !strcmp(csd_key, "esds")) {
++                for (size_t pos = 0; pos + 2 < size; pos++) if (base[pos] == 5) {
++                    size_t at = pos + 1, len = 0;
++                    for (int n = 0; n < 4 && at < size; n++) {
++                        uint8_t b = base[at++]; len = (len << 7) | (b & 0x7f);
++                        if (!(b & 0x80)) break;
++                    }
++                    if (len >= 2 && len <= 64 && at + len <= size) {
++                        base += at; size = len; LOG("AAC AudioSpecificConfig: %zu bytes (%02x %02x)", size, base[0], base[1]); break;
++                    }
++                }
++            }
++            if (size > 0 && size < 65536) {
++                m->av->extradata = av_mallocz(size + AV_INPUT_BUFFER_PADDING_SIZE);
++                if (!m->av->extradata) runtime_fail("codec specific data allocation");
++                memcpy(m->av->extradata, base, size); m->av->extradata_size = (int)size;
++            }
++        }
++        int rc = avcodec_open2(m->av, codec, NULL);
++        if (rc < 0) { av_error("decoder open", rc); runtime_fail("FFmpeg decoder open"); }
++        m->avframe = av_frame_alloc(); m->avpacket = av_packet_alloc();
++        if (!m->avframe || !m->avpacket) runtime_fail("FFmpeg frame allocation");
++        for (int i = 0; i < IN_BUFS; i++) if (!(m->in[i] = malloc(IN_CAP))) runtime_fail("movie input buffers");
++        for (int i = 0; i < OUT_BUFS; i++) if (!(m->out[i] = malloc((size_t)frame_bytes(m)))) runtime_fail("movie output buffers");
++        reset_queues(m); m->format_sent = 0; m->configured = 1; m->last_error = 0;
++        pthread_mutex_unlock(&m->mu);
++        LOG("configured %s (%dx%d, %d Hz, %d channels)", expected, w, h, m->sample_rate, m->channels);
++        return ST_OK;
++    }
++#endif
+     if (!mime || strcmp(mime, "video/x-vnd.on2.vp9") || w <= 0 || h <= 0 || w > 8192 || h > 8192 || (w | h) & 1) {
+         LOG("【红】configure: mime %s %dx%d not supported", mime ? mime : "(none)", w, h); return ST_UNSUPPORTED;
+     }
+@@ -295,6 +431,15 @@
+     m->events = events; return ST_OK;
+ }
+ static void set_format(Movie *m, void *md) {
++#ifdef KIRBY_FFMPEG
++    if (m->type == 4) {
++        G.md_set_string(md, "mime", "audio/raw");
++        G.md_set_int32(md, "sample-rate", m->sample_rate);
++        G.md_set_int32(md, "channel-count", m->channels);
++        G.md_set_int32(md, "pcm-encoding", 2);
++        return;
++    }
++#endif
+     G.md_set_string(md, "mime", "video/raw");
+     G.md_set_int32(md, "width", m->w); G.md_set_int32(md, "height", m->h);
+     G.md_set_int32(md, "stride", m->w); G.md_set_int32(md, "slice-height", m->h);
+@@ -334,10 +479,16 @@
+     Movie *m = find(obj); if (!m) return ((int_fn)G.orig[MOVIE_FLUSH])(obj);
+     pthread_mutex_lock(&m->mu);
+     if (m->configured) {   /* drop queued work; the next input starts a new decode (after a seek: a key frame) */
+-        vpx_codec_destroy(&m->vpx); m->vpx_live = 0;
+-        vpx_codec_dec_cfg_t cfg = {.threads = 4, .w = (unsigned)m->w, .h = (unsigned)m->h};
+-        if (vpx_codec_dec_init(&m->vpx, vpx_codec_vp9_dx(), &cfg, 0) != VPX_CODEC_OK) runtime_fail("libvpx VP9 decoder re-initialisation");
+-        m->vpx_live = 1; reset_queues(m);
++        if (m->type == TYPE_VP9) {
++            vpx_codec_destroy(&m->vpx); m->vpx_live = 0;
++            vpx_codec_dec_cfg_t cfg = {.threads = 4, .w = (unsigned)m->w, .h = (unsigned)m->h};
++            if (vpx_codec_dec_init(&m->vpx, vpx_codec_vp9_dx(), &cfg, 0) != VPX_CODEC_OK) runtime_fail("libvpx VP9 decoder re-initialisation");
++            m->vpx_live = 1;
++        }
++#ifdef KIRBY_FFMPEG
++        else if (m->av) avcodec_flush_buffers(m->av);
++#endif
++        reset_queues(m);
+     }
+     pthread_mutex_unlock(&m->mu);
+     return ST_OK;
+@@ -384,6 +535,7 @@
+     if (m->nready > 0) {
+         Ready r = m->ready[0]; memmove(m->ready, m->ready + 1, (size_t)--m->nready * sizeof m->ready[0]);
+         *index = r.index; *time = r.time; *flags = r.flags; *remaining = m->nready; st = ST_OK;
++        if (m->type == 1 && getenv("KIRBY_MOVIE_TRACE")) { static int n; if (n++ < 5) LOG("video acquired slot=%d bytes=%d pts=%lld flags=%u", r.index, m->out_bytes[r.index], (long long)r.time, r.flags); }
+     }
+     pthread_mutex_unlock(&m->mu);
+     return st;
+@@ -397,7 +549,7 @@
+     if (index >= 0 && index < OUT_BUFS && m->out_held[index]) {
+         int bytes = m->out_bytes[index]; uint8_t *dst = G.buf_base(buf);
+         if (!bytes) st = ST_OK;
+-        else if (dst && G.buf_capacity(buf) >= (size_t)bytes) { memcpy(dst, m->out[index], (size_t)bytes); G.buf_set_range(buf, 0, bytes); st = ST_OK; }
++        else if (dst && G.buf_capacity(buf) >= (size_t)bytes) { memcpy(dst, m->out[index], (size_t)bytes); G.buf_set_range(buf, 0, bytes); st = ST_OK; if (m->type == 1 && getenv("KIRBY_MOVIE_TRACE")) { static int n, colorful; if (n++ < 5) LOG("video copied slot=%d bytes=%d Y=%02x,%02x,%02x,%02x UV=%02x,%02x", index, bytes, dst[0], dst[1], dst[2], dst[3], dst[(size_t)m->w*m->h], dst[(size_t)m->w*m->h+1]); if (!colorful) { unsigned hi=0, lo=255; for (size_t p=0; p<(size_t)m->w*m->h; p+=4096) { unsigned y=dst[p]; if(y>hi)hi=y; if(y<lo)lo=y; } if(hi>32) { colorful=1; LOG("video output first nonblack Y min=%u max=%u frame=%llu",lo,hi,(unsigned long long)m->frames); } } } }
+         else LOG("【红】output buffer of %zu bytes for a %d-byte frame", G.buf_capacity(buf), bytes);
+     }
+     pthread_mutex_unlock(&m->mu); return st;
+@@ -453,6 +605,7 @@
+     for (int i = 0; i < MOVIE_ENTRIES; i++) if (!strcmp(name, NAMES[i])) return ENTRIES[i];
+     /* aliases: the base-object constructor and the complete-object destructor share code with the entries above */
+     if (!strcmp(name, "_ZN5movie7DecoderC2ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeEi")) return h_ctor;
++    if (!strcmp(name, "_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeE") || !strcmp(name, "_ZN5movie7DecoderC2ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeE")) return h_ctor_kirby;
+     if (!strcmp(name, "_ZN5movie7DecoderD1Ev")) return h_d2;
+     return NULL;
+ }
+--- a/runtime/movie_host.h
++++ b/runtime/movie_host.h
+@@ -14,8 +14,10 @@
+     void (*buf_set_data)(void *buf, void *data, size_t capacity);
+     void *(*buf_base)(const void *buf);
+     size_t (*buf_capacity)(const void *buf);
++    size_t (*buf_size)(const void *buf);
+     bool (*md_find_int32)(const void *md, const char *key, int *value);
+     bool (*md_find_string)(const void *md, const char *key, const char **value);
++    bool (*md_find_buffer)(const void *md, const char *key, void **value);
+     void (*md_set_int32)(void *md, const char *key, int value);
+     void (*md_set_rect)(void *md, const char *key, int left, int top, int right, int bottom);
+     void (*md_set_string)(void *md, const char *key, const char *value);
+--- a/scripts/prepare_runtime.py
++++ b/scripts/prepare_runtime.py
+@@ -17,7 +17,7 @@
+ OUT = ROOT / ('build' if version == 'v0' else f'build/{version}')
+ OUT.mkdir(parents=True, exist_ok=True)
+ report = json.loads((ROOT / ('analysis/phase12-validation.json' if version == 'v0' else f'analysis/{version}-port/phase12-validation.json')).read_text())
+-assert report['status'] == 'pass' and report['rom_version'] == version
++assert report['status'] == 'probe' and report['rom_version'] == version
+ if version == 'v112':
+     expected = 'f04fbebdaacbcde0bcca20cbe0caff06bd51f7c8f904d217e5f17efe3308d1ac'
+     assert report['module_file_sha256']['extracted/v112/exefs/main'] == expected, 'Unsupported 1.1.2 main image'
+@@ -80,7 +80,7 @@
+         assert kind in ['cntpct', 'cntvct', 'svc']
+         gates.append(dict(ret=int(ret, 0), timer=kind != 'svc', arg=int(arg), original=int(original, 0)))
+     # Match each compiler's actual DT_INIT state load before decoding it.
+-    flag_reg, load_offset = (19, 20) if version == 'v143' else (20, 24)
++    flag_reg, load_offset = (19, 20)
+     a, w = struct.unpack_from('<I', image, tags[12]+16)[0], struct.unpack_from('<I', image, tags[12]+load_offset)[0]
+     assert a & 0x9f00001f == 0x90000000 | flag_reg and w & 0xffc003ff == 0xb9400008 | (flag_reg << 5)
+     imm = ((a >> 29) & 3) | (((a >> 5) & 0x7ffff) << 2)
+--- a/third_party/d2r_gfx/gfx/nvn/hle_nvn.c
++++ b/third_party/d2r_gfx/gfx/nvn/hle_nvn.c
+@@ -136,13 +136,18 @@
+ static void call_stats_end(const void *cb, const uint8_t *copy);
+ NVN(nvnDeviceBuilderSetDefaults, void, NVNdeviceBuilder *b) { memset(b, 0, sizeof(dev_builder_t)); }
+ NVN(nvnDeviceBuilderSetFlags, void, NVNdeviceBuilder *b, int f) { ((dev_builder_t *)b)->flags = f; }
++// The zero-valued NVN device depth mode is -w..w; keep translation in sync
++// even when a game uses the default and never calls SetDepthMode.
++static _Atomic int g_depth_near_minus_w = 1;
+ NVN(nvnDeviceInitialize, NVNboolean, NVNdevice *d, const NVNdeviceBuilder *b) {
+     dev_t_ *o = (dev_t_ *)d; memset(o, 0, sizeof *o);
+     o->magic = MAGIC('D', 'E', 'V', 0); o->flags = ((const dev_builder_t *)b)->flags;
++    atomic_store(&g_depth_near_minus_w, o->depth_mode == NVN_DEPTH_MODE_NEAR_IS_MINUS_W);
+     OLOG("DeviceInitialize %p flags=%#x", (void *)d, o->flags);
+     return 1;
+ }
+ NVN(nvnDeviceFinalize, void, NVNdevice *d) { ((dev_t_ *)d)->magic = 0; }
++NVN(nvnDeviceSetIntermediateShaderCache, void, NVNdevice *d, int size) { (void)d; (void)size; }
+ NVN(nvnDeviceGetProcAddress, PFNNVNGENERICFUNCPTRPROC, const NVNdevice *d, const char *name) {
+     (void)d; return (PFNNVNGENERICFUNCPTRPROC)runtime_hle_wrap_named(nvn_lookup(name), name);
+ }
+@@ -185,7 +190,16 @@
+ // Separate texture / sampler handles: value = descriptor index (the sampler index goes in bit 20 and above, consistent with the bit layout of combined handles)
+ // TOTK: combined handle = texture id (20 bits) | sampler id << 20, the encoding the replay layer decodes.
+ NVN(nvnDeviceGetTextureHandle, NVNtextureHandle, const NVNdevice *d, int tid, int sid) {
+-    (void)d; if (tid < 0 || tid >= (1 << 20) || sid < 0 || sid >= (1 << 12)) die("texture handle ids out of range %d/%d", tid, sid);
++    (void)d;
++    // Kirby binds an unassigned refractionDepthBuffer parameter while opening
++    // Pause. Preserve its invalid descriptor sentinel; do not alias a live
++    // texture. Replay still checks reflected slots before choosing its dummy texture.
++    if (tid == -1 && sid >= 0 && sid < (1 << 12) && getenv("KIRBY_PREVIEW")) {
++        static _Atomic unsigned unbound;
++        if (atomic_fetch_add(&unbound, 1) < 3) LOG("[kirby] preserved unbound texture descriptor sentinel (sampler %d)", sid);
++        return (NVNtextureHandle)(0xfffffu | (uint64_t)sid << 20);
++    }
++    if (tid < 0 || tid >= (1 << 20) || sid < 0 || sid >= (1 << 12)) die("texture handle ids out of range %d/%d", tid, sid);
+     return (NVNtextureHandle)((uint64_t)tid | (uint64_t)sid << 20);
+ }
+ NVN(nvnDeviceGetTexelFetchHandle, NVNtextureHandle, const NVNdevice *d, int tid) {
+@@ -197,7 +211,6 @@
+     dev_t_ *o = (dev_t_ *)d; o->dbg_cb = B(enable) ? (void *)cb : NULL; o->dbg_data = data;
+ }
+ NVN(nvnDeviceSetWindowOriginMode, void, NVNdevice *d, NVNwindowOriginMode m) { ((dev_t_ *)d)->origin = m; LOG("[nvn] 窗口原点 %s", m ? "左上（同 D3D / Metal）" : "左下（GL）"); }
+-static _Atomic int g_depth_near_minus_w;
+ int totk_depth_near_minus_w(void) { return atomic_load(&g_depth_near_minus_w); }
+ NVN(nvnDeviceSetDepthMode, void, NVNdevice *d, NVNdepthMode m) { ((dev_t_ *)d)->depth_mode = m; atomic_store(&g_depth_near_minus_w, m == NVN_DEPTH_MODE_NEAR_IS_MINUS_W); LOG("[nvn] 深度模式 %s", m ? "近=0（同 D3D / Metal）" : "近=-w（GL）：顶点着色器翻译时做 z=(z+w)/2 转换"); }
+ NVN(nvnDeviceFinalizeCommandHandle, void, NVNdevice *d, NVNcommandHandle h) { (void)d; (void)h; }
+@@ -217,7 +230,7 @@
+     o->magic = MAGIC('P', 'O', 'O', 'L'); o->flags = s->flags; o->mem = s->mem; o->size = s->size;
+     if ((o->flags & (NVN_MEMORY_POOL_FLAGS_PHYSICAL | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) && !totk_vpool_init(o)) { o->magic = 0; return 0; }
+     int gpu_visible = !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS);
+-    if (o->mem && gpu_visible) { mtl_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
++    if (o->mem && gpu_visible) { for (uint64_t off = 0; off < o->size; off += (1ull << 29)) { uint64_t n = o->size - off; if (n > (1ull << 29)) n = 1ull << 29; mtl_pool_add(o->mem + off, n); } nvn_dirty_add_range(o->mem, o->size); }
+     if (!o->mem) LOG("【红】MemoryPoolInitialize 池没有存储 flags=%#x size=%#llx", o->flags, o->size);
+     OLOG("MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, o->size, o->flags);
+     if (poollog_env()) LOG("[pool] %p mem=%p..%p size=%#llx flags=%#x game=%p", (void *)p, (void *)o->mem, (void *)(o->mem + o->size), o->size, o->flags, (void *)o->game_mem);
+@@ -225,7 +238,7 @@
+ }
+ NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) {
+     pool_t *o = (pool_t *)p;
+-    if (o->mem && !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)) { x_drain(); nvn_dirty_remove_range(o->mem); mtl_pool_del(o->mem); }
++    if (o->mem && !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)) { x_drain(); nvn_dirty_remove_range(o->mem); for (uint64_t off = 0; off < o->size; off += (1ull << 29)) mtl_pool_del(o->mem + off); }
+     totk_vpool_fini(o); o->magic = 0;
+ }
+ NVN(nvnMemoryPoolFlushMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) { (void)p; (void)off; (void)n; }
+@@ -1745,6 +1758,10 @@
+     copy_view(&o->sv, &o->has_sv, sv); copy_view(&o->dv, &o->has_dv, dv); o->sr = *sr; o->dr = *dr; o->flags = flags;
+ }
+ NVN(nvnCommandBufferSetCopyRowStride, void, NVNcommandBuffer *c, ptrdiff_t st) { REC(c, OP_COPY_STRIDE, p_copy_stride)->stride = st; }
++NVN(nvnCommandBufferSetCopyImageStride, void, NVNcommandBuffer *c, ptrdiff_t st) {
++    (void)c;
++    if (st != 0) { fprintf(stderr, "[nvn] nonzero copy image stride %td unsupported\n", st); abort(); }
++}
+ NVN(nvnCommandBufferSetBlendColor, void, NVNcommandBuffer *c, const float *v) { memcpy(REC(c, OP_BLEND_COLOR, p_blend_color)->rgba, v, 16); }
+ 
+ // ---------- 状态对象：就地打包（nvn_obj.h） ----------
+--- a/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m
++++ b/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m
+@@ -454,9 +454,16 @@
+ static _Atomic int g_ka_target_us = 1000;
+ static _Atomic uint64_t g_ka_n, g_ka_us, g_ka_max_us;   // spin kernels completed, their summed / longest GPU time (us)
+ void mtl_keepalive_stats(uint64_t v[3]) { v[0] = atomic_load(&g_ka_n); v[1] = atomic_load(&g_ka_us); v[2] = atomic_exchange(&g_ka_max_us, 0); }
++/* Kirby's base/MetalFX-spatial modes meet 60 Hz without spin work. Preserve
++   clock support for native 2K and interpolation; an explicit env value keeps
++   the original opt-in/out behaviour for comparisons and other titles. */
++static int keepalive_needed(int kirby_auto, int interpolation, int native_2k) {
++    return !kirby_auto || interpolation || native_2k;
++}
+ static void keepalive_start(void) {
+     static int started; const char *e = getenv("TOTK_GPU_KEEPALIVE");
+     if (started || (e && !atoi(e)) || nogpu() || getenv("TOTK_HEADLESS")) return; started = 1;   // not in standalone probes
++    int kirby_auto = getenv("KIRBY_PREVIEW") && !e;
+     NSError *err = nil;
+     id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void keep(device float *a [[buffer(0)]], constant uint &n [[buffer(1)]], uint i [[thread_position_in_grid]]) { float x = a[i]; for (uint j = 0; j < n; j++) x = fma(x, 1.0000001f, 0.5f); a[i] = x; }\n" options:nil error:&err];
+     id<MTLComputePipelineState> ps = lib ? [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"keep"] error:&err] : nil;
+@@ -467,7 +474,14 @@
+     g_ka_idle = dispatch_semaphore_create(0);
+     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+         __block uint32_t n = 40000; dispatch_semaphore_t sem = dispatch_semaphore_create(1);   // ~1 ms on the M4 at full clock
++        int was_needed = -1;
+         for (;;) @autoreleasepool {
++            int needed = keepalive_needed(kirby_auto, mfx_enabled(), atomic_load(&g_pic_big));
++            if (kirby_auto && needed != was_needed) {
++                MLOG("[kirby] GPU keepalive: %s (native 2K / interpolation only)", needed ? "active" : "idle");
++                was_needed = needed;
++            }
++            if (!needed) { usleep(10000); continue; }
+             int target_us = atomic_load(&g_ka_target_us);
+             if (!target_us) { usleep(2000); continue; }
+             uint64_t last = atomic_load(&g_last_sub_ns);
+@@ -4330,7 +4344,7 @@
+     { void td_note(id pd, NSUInteger nc); td_note(pd, (NSUInteger)R.rt.n);
+       void ts_note(id pd, NSUInteger nc); ts_note(pd, (NSUInteger)R.rt.n); }
+     ser_gate();
+-    if (mfx_enabled()) mfx_pass_setup(pd);   // TOTK: MetalFX scene / UI attachments, G-buffer depth
++    if (mfx_enabled() && !getenv("KIRBY_PREVIEW")) mfx_pass_setup(pd);   // TOTK: MetalFX scene / UI attachments, G-buffer depth
+     g_enc = enc_r_begin(pd);
+     args_dirty_all();
+     g_stat_pass++;
+@@ -4435,10 +4449,21 @@
+ /* TOTK: a shader's MSL source is needed only to build derived functions (varying patches, layered vertex, depth-less and
+    MetalFX UI fragment variants). The Mac keeps it; iOS keeps only the path and reads it when needed (thousands of sources
+    held as strings cost on the order of 100 MB on a device that may use about 4 GB in total). */
++/* Every compile path must use the same framebuffer orientation. Derived vertex
++   functions (missing varyings/layers) reread MSL, bypassing shader_load's library. */
++static NSString *kirby_shader_source(NSString *src, int stage) {
++    if (!src || stage != 0 || !getenv("KIRBY_VERTEX_Y_FLIP")) return src;
++    NSString *flip = @"    out.gl_Position.y = -out.gl_Position.y;";
++    if ([src containsString:flip]) return src;
++    if ([src containsString:@"out.gl_Position"] && [src containsString:@"    return out;"])
++        return [src stringByReplacingOccurrencesOfString:@"    return out;"
++            withString:[flip stringByAppendingString:@"\n    return out;"]];
++    return src;
++}
+ static NSString *sh_src(NvShader *s) {
+     if (!s) return nil;
+-    if (s->src) return s->src;
+-    return s->src_path ? [NSString stringWithContentsOfFile:s->src_path encoding:NSUTF8StringEncoding error:nil] : nil;
++    NSString *src = s->src ?: (s->src_path ? [NSString stringWithContentsOfFile:s->src_path encoding:NSUTF8StringEncoding error:nil] : nil);
++    return kirby_shader_source(src, s->stage);
+ }
+ static int sh_has_src(NvShader *s) { return s && (s->src || s->src_path); }
+ #include "nvn_pso_skey.h"
+@@ -4741,6 +4766,10 @@
+         if ([NSFileManager.defaultManager fileExistsAtPath:rt_lib]) { lib = lib_from_file(rt_lib, &e); if (!lib) MLOG("【红】预编译着色器库加载失败 %s：%s（改为现编）", pc.UTF8String, e.localizedDescription.UTF8String); else g_rt_prebuilt++; }
+ #endif
+         if (!lib) { NSData *raw = [NSData dataWithContentsOfFile:rt_src options:0 error:&e];
++                    if (raw && stage == 0) {
++                        NSString *source = [[NSString alloc] initWithData:raw encoding:NSUTF8StringEncoding];
++                        raw = [kirby_shader_source(source, stage) dataUsingEncoding:NSUTF8StringEncoding];
++                    }
+ #if !TARGET_OS_IPHONE
+                     if (raw && (lib = shader_lib_prebuilt(raw))) g_rt_prebuilt++;
+ #endif
+@@ -6544,6 +6573,37 @@
+             if (ren) { gpu = ren; if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) RED_ONCE(58, "UI 矩阵修补读的是内存，跳过了含内联更新的 uniform 副本"); }
+             else if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) { uint64_t pg = ui_mat_patch(u, mb, mo); if (pg) gpu = pg; }
+             else { const usnap_t *sc = usnap_find(u->addr, u->size ? u->size : 1); if (sc) gpu = sc->gpu + (u->addr - sc->lo); }   // TOTK: contents as of the submit call
++            /* Kirby base game: its movie conversion block is zero in the native
++               startup path. Supply the limited-range BT.709 matrix at binding,
++               after uniform snapshots have selected the actual GPU allocation.
++               Match the movie vertex shader and both NV12 planes; shader-cache
++               fragment keys can differ even when the translated MSL is equal. */
++            if (getenv("KIRBY_PREVIEW") && nvn_stage == 1 && reg == 0 && u->size == 64) {
++                NvProg *movie = S.prog ? prog_get(S.prog) : nil;
++                const treg_t *y = bound_tex(S.tex[1][0]), *uv = bound_tex(S.tex[1][1]);
++                const uint8_t *actual = bound_uniform_bytes(gpu, 64, (__bridge id<MTLBuffer>)mb);
++                static const uint8_t zero[64];
++                if (movie && movie->sh[0] && !strncmp(movie->sh[0]->key, "0f97533a854839fe", 16)
++                    && y && y->t.d.format == 1 && y->t.d.width == 1920 && y->t.d.height == 1080
++                    && uv && uv->t.d.format == 13 && uv->t.d.width == 960 && uv->t.d.height == 540
++                    && actual && !memcmp(actual, zero, sizeof zero)) {
++                    static id<MTLBuffer> matrix;
++                    if (!matrix) {
++                        static const float bt709[16] = {
++                            16.f/255.f, 128.f/255.f, 128.f/255.f, 0.f,
++                            1.1643836f, 0.f, 1.7927411f, 0.f,
++                            1.1643836f, -0.2132486f, -0.5329093f, 0.f,
++                            1.1643836f, 2.1124018f, 0.f, 0.f,
++                        };
++                        matrix = [g_dev newBufferWithBytes:bt709 length:sizeof bt709 options:MTLResourceStorageModeShared];
++                        if (!matrix) MDIE("Kirby movie matrix allocation");
++                        res_add(matrix);
++                        MLOG("[kirby] supplied missing movie BT.709 matrix at GPU binding");
++                    }
++                    gpu = matrix.gpuAddress;
++                    USE(matrix, MTLResourceUsageRead);
++                }
++            }
+             if (bl) {
+                 PD("B %llu st%d cb reg%d addr=%#llx size=%llu pool=%#llx+%#llx f=%g,%g,%g,%g", g_stat_pass, nvn_stage, reg, (unsigned long long)u->addr, (unsigned long long)u->size,
+                    (unsigned long long)(u->addr - mo), (unsigned long long)mo, ((float *)u->addr)[0], ((float *)u->addr)[1], ((float *)u->addr)[2], ((float *)u->addr)[3]);
+@@ -8995,9 +9055,32 @@
+    Returns 1 when the draw was replaced (not to be encoded). */
+ static int mfxup_draw(NvProg *pr) {
+     g_mfxup_src = nil; g_mfxup_out = nil; g_mfxup_sh = nil;
+-    if (!pr || !mfxup_enabled()) return 0;
++    if (!pr) return 0;
+     __unsafe_unretained NvShader *fs = pr->sh[1];
+     if (!fs) return 0;
++    /* The final copy has several fragment variants. Match its fixed quad
++       vertex shader and an actual registered swapchain target, not one FS hash. */
++    if (getenv("KIRBY_PREVIEW") && pr->sh[0] && !strncmp(pr->sh[0]->key,"06c3dcf1ff3c65d2",16) &&
++        R.rt.n==1 && R.rt.color[0] && xv_present(R.rt.color[0]->serial)) {
++        int tid=(int)(S.tex[1][0]&0xfffff);
++        id<MTLTexture> src=tid>0?(__bridge id<MTLTexture>)tex_fast(tid):nil;
++        id<MTLTexture> dst=tex_mtl(R.rt.color[0]);
++        if(src&&dst&&dst.width==2560&&dst.height==1440 && src.pixelFormat==MTLPixelFormatRG11B10Float) {
++            atomic_store(&g_pic_big,src.width>=2560&&src.height>=1440);
++            if(mfxup_enabled()&&mfxup_output_enabled()&&src.width<dst.width&&src.height<dst.height&&
++               src.textureType==MTLTextureType2D && !(S.color.blend_en&1) && !S.ds.dt && !S.ds.st &&
++               (S.chmask.mask&15)==15 && scissor_full(R.rt.color[0],&R.rt.cview[0],R.rt.has_cview[0]) &&
++               mfxup_prepare(MFXUP_SCENE,src,nil,2560,1440,MFXUP_HDR)) {
++                rp_end();blit_close();rs_sync();
++                id<MTLTexture> out=mfxup_encode_ex(MFXUP_SCENE,g_cb,src,src.width,src.height,nil,2560,1440,MFXUP_HDR);
++                if(out){mfxup_queue_residency();g_mfxup_src=src;g_mfxup_out=out;g_mfxup_sh=fs;
++                    atomic_store(&g_mfxup_last,atomic_load(&g_cur_frame));
++                    static unsigned n;if(++n%1800==1)MLOG("[kirby] MetalFX scene %lux%lu -> 2560x1440 (%u frames)",(unsigned long)src.width,(unsigned long)src.height,n);}
++            }
++        }
++        return 0;
++    }
++    if(!mfxup_enabled())return 0;
+     if (mfxup_dock(fs)) {
+         static unsigned n; if (++n % 1800 == 1) { char b[200]; mfxup_stats(MFXUP_DOCKED, b, sizeof b);
+             MLOG("[mfx-up] 至帧 %llu：%s；替换游戏放大 %llu 次，保留 %llu 次（建不出或在后台建 %llu、目标不符 %llu、混合/掩码/深度 %llu、尺寸 %llu、视口/剪裁 %llu、常量 %llu）",
+@@ -9773,6 +9856,63 @@
+     defer_obj_unref(sv); defer_obj_unref(dv); defer_obj_release(pb);   // 本次提交跑完再放（视图不单独驻留，参数块撤驻留） | Release after this submit has finished running (views are not made resident separately; the parameter block is removed from residency)
+     return 1;
+ }
++// Kirby's HDR downsample uses filtered CopyTextureToTexture. A blit cannot
++// scale, so render the source rectangle into the destination rectangle instead.
++// Restrict this implementation to the observed 2D HDR and R16Float surfaces.
++static int kirby_copy_t2t_scaled(const p_copy_t2t *c, id<MTLTexture> src, id<MTLTexture> dst) {
++    if (!getenv("KIRBY_PREVIEW") || getenv("KIRBY_DISABLE_SCALED_COPY") || src == dst
++        || src.textureType != MTLTextureType2D || dst.textureType != MTLTextureType2D
++        || (src.pixelFormat != MTLPixelFormatRG11B10Float && src.pixelFormat != MTLPixelFormatR16Float) || dst.pixelFormat != src.pixelFormat
++        || !(dst.usage & MTLTextureUsageRenderTarget)
++        || (c->has_sv && ((c->sv.set_levels && c->sv.base_level) || (c->sv.set_layers && c->sv.min_layer)))
++        || (c->has_dv && ((c->dv.set_levels && c->dv.base_level) || (c->dv.set_layers && c->dv.min_layer)))
++        || c->sr.zoffset || c->dr.zoffset || c->sr.depth != 1 || c->dr.depth != 1
++        || c->sr.width <= 0 || c->sr.height <= 0 || c->dr.width <= 0 || c->dr.height <= 0
++        || c->sr.xoffset < 0 || c->sr.yoffset < 0 || c->dr.xoffset < 0 || c->dr.yoffset < 0
++        || (uint64_t)c->sr.xoffset + c->sr.width > src.width || (uint64_t)c->sr.yoffset + c->sr.height > src.height
++        || (uint64_t)c->dr.xoffset + c->dr.width > dst.width || (uint64_t)c->dr.yoffset + c->dr.height > dst.height
++        || c->flags != NVN_COPY_FLAGS_LINEAR_FILTER_BIT) return 0;
++    static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *pipelines;
++    static id<MTL4ArgumentTable> at;
++    if (!pipelines) pipelines = [NSMutableDictionary new];
++    id<MTLRenderPipelineState> ps = pipelines[@(dst.pixelFormat)];
++    if (!ps) {
++        const char *msl =
++            "#include <metal_stdlib>\nusing namespace metal;\n"
++            "struct V { float4 p [[position]]; float2 uv; };\n"
++            "vertex V vs(uint i [[vertex_id]]) { float2 u=float2((i<<1)&2,i&2); V v; v.p=float4(u*float2(2,-2)+float2(-1,1),0,1); v.uv=u; return v; }\n"
++            "fragment float4 fs(V v [[stage_in]], texture2d<float> s [[texture(0)]], constant float4& r [[buffer(0)]]) { constexpr sampler f(coord::normalized,address::clamp_to_edge,filter::linear); return s.sample(f,r.xy+v.uv*r.zw,level(0)); }\n";
++        NSError *e = nil;
++        id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(msl) options:nil error:&e];
++        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
++        pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
++        pd.colorAttachments[0].pixelFormat = dst.pixelFormat;
++        if (lib) ps = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
++        MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount = 1; ad.maxBufferBindCount = 1;
++        if (!at) at = [g_dev newArgumentTableWithDescriptor:ad error:&e];
++        if (!ps || !at) { MLOG("[kirby] scaled copy pipeline failed: %s", e.localizedDescription.UTF8String); return 0; }
++        pipelines[@(dst.pixelFormat)] = ps;
++    }
++    id<MTLBuffer> pb = [g_dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
++    if (!pb) return 0;
++    float *v = pb.contents; v[0] = (float)c->sr.xoffset/src.width; v[1] = (float)c->sr.yoffset/src.height;
++    v[2] = (float)c->sr.width/src.width; v[3] = (float)c->sr.height/src.height; res_add(pb);
++    rp_end(); blit_close(); rs_sync();
++    MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new]; rp.colorAttachments[0].texture = dst;
++    int full = !c->dr.xoffset && !c->dr.yoffset && c->dr.width == dst.width && c->dr.height == dst.height;
++    rp.colorAttachments[0].loadAction = full ? MTLLoadActionDontCare : MTLLoadActionLoad;
++    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
++    id<MTL4RenderCommandEncoder> en = [g_cb renderCommandEncoderWithDescriptor:rp]; es_reset();
++    if (!en) { defer_obj_release(pb); return 0; }
++    [en barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
++    [at setTexture:src.gpuResourceID atIndex:0]; [at setAddress:pb.gpuAddress atIndex:0];
++    [en setArgumentTable:at atStages:MTLRenderStageFragment]; [en setRenderPipelineState:ps];
++    [en setViewport:(MTLViewport){c->dr.xoffset,c->dr.yoffset,c->dr.width,c->dr.height,0,1}];
++    [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; m4_end(en);
++    args_dirty_all(); g_pso_dirty = g_dss_dirty = 1; defer_obj_release(pb);
++    static int noted; if (!noted++) MLOG("[kirby] filtered HDR texture copy %dx%d -> %dx%d",c->sr.width,c->sr.height,c->dr.width,c->dr.height);
++    return 1;
++}
+ // GPU：贴图 → 贴图（原先误列为空操作，选角页每帧 3 次）。等尺寸、不镜像、同格式 → 逐层 blit；其余语义（缩放带过滤、镜像、换格式）blit 表达不了，报红待实现
+ // GPU: texture -> texture (previously mislisted as a no-op, 3 times per frame on the character select page). Same size, not mirrored, same format -> blit layer by layer; the other semantics (scaling with filtering, mirroring, format change) cannot be expressed by blit: report a failure, to be implemented
+ static void copy_t2t(const p_copy_t2t *c) {
+@@ -9799,6 +9939,7 @@
+         for (int z = 0; z < nz && ok; z++) ok = copy_t2t_astc(s, d, sl, sz0 + c->sr.zoffset + z, dl, dz0 + c->dr.zoffset + z, c->sr.xoffset, c->sr.yoffset, c->dr.xoffset, c->dr.yoffset, c->sr.width, c->sr.height);
+         if (ok) return;
+     }
++    if ((c->sr.width != c->dr.width || c->sr.height != c->dr.height) && kirby_copy_t2t_scaled(c, s, d)) return;
+     if (c->sr.width != c->dr.width || c->sr.height != c->dr.height || (c->sr.depth ? c->sr.depth : 1) != (c->dr.depth ? c->dr.depth : 1) || (c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT)
+         || s.pixelFormat != d.pixelFormat || s3 != d3) {
+         RED_ONCE(33, "贴图→贴图拷贝未实现的形态：%dx%dx%d→%dx%dx%d 标志 %#x 格式 %lu→%lu 3D %d→%d", c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth,
+@@ -10764,7 +10905,7 @@
+ static id<MTLTexture> output_upscale(id<MTL4CommandBuffer> cb, id<MTLTexture> src, NSUInteger cx, NSUInteger cy, NSUInteger cw, NSUInteger ch, MTLViewport vp, int slot) {
+     static NSUInteger sw, sh; static int same;
+     if (slot >= 0 && slot < 3) g_outup_timed[slot] = 0;
+-    if (!mfxup_enabled() || !mfxup_output_enabled()) { g_outup_skip[0]++; return nil; }
++    if (getenv("KIRBY_PREVIEW") || !mfxup_enabled() || !mfxup_output_enabled()) { g_outup_skip[0]++; return nil; }
+     NSUInteger ow = (NSUInteger)vp.width, oh = (NSUInteger)vp.height;
+     if (cx || cy || ow < cw + 16 || oh < ch + 9) { g_outup_skip[1]++; return nil; }
+     if (ow != sw || oh != sh) { sw = ow; sh = oh; same = 0; }
+@@ -10785,6 +10926,11 @@
+     return out;
+ }
+ static int dcmp_out(const void *x, const void *y) { double a = *(const double *)x, b = *(const double *)y; return a < b ? -1 : a > b; }
++static int kirby_flip_present_y(void) {
++    static int flip = -1;
++    if (flip < 0) { const char *value = getenv("KIRBY_PRESENT_FLIP_Y"); flip = value && !strcmp(value, "1"); }
++    return flip;
++}
+ static void outup_note_gpu(int slot) {   // the present command buffer of this slot completed: the upscale's GPU time
+     if (!g_outup_heap || g_outup_hz <= 0) return;
+     NSData *d = [g_outup_heap resolveCounterRange:NSMakeRange((NSUInteger)slot * 2, 2)]; const MTL4TimestampHeapEntry *t = d.bytes;
+@@ -10831,6 +10977,10 @@
+     [en setRenderPipelineState:g_blit_pso]; [en setFragmentTexture:src atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
+     float uv[8] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
+                    (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
++    if (kirby_flip_present_y()) {
++        uv[1] = (float)(cy + ch) / src.height;
++        uv[3] = -uv[3];
++    }
+     [en setFragmentBytes:uv length:sizeof uv atIndex:0];
+     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+     MTLViewport ovp; float fuv[8];
+@@ -10858,7 +11008,7 @@
+         }
+         cx = crop[0]; cy = crop[1]; cw = crop[2]; ch = crop[3];
+     }
+-    if (crop) atomic_store(&g_pic_big, cw > 1920 || ch > 1080);   // a game frame (interpolated frames come without the crop)
++    if (crop && !getenv("KIRBY_PREVIEW")) atomic_store(&g_pic_big, cw > 1920 || ch > 1080);   // a game frame (interpolated frames come without the crop)
+     present_pipeline(dst.pixelFormat);
+     double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
+     MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
+@@ -10881,6 +11031,10 @@
+     float *uv = g_present_uv[uv_i].contents;
+     uv[0] = (float)cx / pic.width; uv[1] = (float)cy / pic.height; uv[2] = (float)cw / pic.width; uv[3] = (float)ch / pic.height;
+     uv[4] = (cx + 0.5f) / pic.width; uv[5] = (cy + 0.5f) / pic.height; uv[6] = (cx + cw - 0.5f) / pic.width; uv[7] = (cy + ch - 0.5f) / pic.height;
++    if (kirby_flip_present_y()) {
++        uv[1] = (float)(cy + ch) / pic.height;
++        uv[3] = -uv[3];
++    }
+     [args setAddress:g_present_uv[uv_i].gpuAddress atIndex:0];
+     [en setArgumentTable:args atStages:MTLRenderStageFragment];
+     [en setViewport:vp]; [en setRenderPipelineState:g_blit_pso];
+@@ -11632,6 +11786,23 @@
+         if (!known) g_mfx.swap[g_mfx.nswap < 4 ? g_mfx.nswap++ : (int)(t->serial % 4)] = t->serial;
+         g_mfx.swap_w = t->d.width; g_mfx.swap_h = t->d.height;
+     }
++    if (getenv("KIRBY_PREVIEW")) {
++        static id<MTL4CommandAllocator> alloc[3]; static id<MTL4CommandBuffer> capture[3];
++        static _Atomic int busy[3]; int a=-1;
++        for(int i=0;i<3&&a<0;i++)if(!atomic_load(&busy[i]))a=i;
++        if(a<0||discard||nogpu()){mfx_frame_abort();return -1;}
++        if(!alloc[a]){alloc[a]=[g_dev newCommandAllocator];capture[a]=[g_dev newCommandBuffer];}
++        [alloc[a] reset];[capture[a] beginCommandBufferWithAllocator:alloc[a]];
++        NSArray *resources=mfx_capture_presented(g_dev,capture[a],tex_mtl(t),a);
++        static int resident; if(!resident&&mfx_residency()){[g_q4 addResidencySet:mfx_residency()];resident=1;}
++        [capture[a] endCommandBuffer];atomic_store(&busy[a],1);
++        TotkCommitOptions *o=[TotkCommitOptions new];
++        [o addFeedbackHandler:^(id<MTL4CommitFeedback> f){
++            (void)resources.count;
++            if(f.error)MLOG("[mfx] Kirby capture error: %s",f.error.description.UTF8String);
++            atomic_store(&busy[a],0);
++        }];q4_commit(capture[a],o);
++    }
+     int slot = mfx_frame_prepare(period);
+     if (slot >= 0) {
+         int a = -1; for (int i = 0; i < 3 && a < 0; i++) if (!atomic_load(&g_mfx_busy[i])) a = i;
+--- a/third_party/d2r_gfx/gfx/nvn/totk_shader_rt.m
++++ b/third_party/d2r_gfx/gfx/nvn/totk_shader_rt.m
+@@ -146,11 +146,17 @@
+ 
+ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, const uint8_t *code, NSDictionary *answers, NSArray *local) {
+     uint64_t started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++    BOOL depth_minus_w = stage == 0 && totk_depth_near_minus_w();
++    // Clip conversion changes the emitted vertex code. Both lookup and the
++    // variant hash must distinguish it; old entries without the field mean 0.
++    NSMutableDictionary *state_answers = [answers mutableCopy];
++    state_answers[@"depth_minus_w"] = @(depth_minus_w);
++    answers = state_answers;
+     pthread_mutex_lock(&g_rt_lock);
+     NSMutableArray *vs = variants_of(shader);
+     for (NSUInteger i = 0; i < vs.count; i++) {
+         NSDictionary *v = vs[i];
+-        if (!deps_match(v[@"deps"], answers)) continue;
++        if ([v[@"depth_minus_w"] boolValue] != depth_minus_w || !deps_match(v[@"deps"], answers)) continue;
+         NSString *found = v[@"variant"];
+         if (!g_msl_checked) g_msl_checked = [NSMutableSet set];
+         BOOL checked = [g_msl_checked containsObject:found];
+@@ -178,7 +184,7 @@
+     NSMutableDictionary *rq = [NSMutableDictionary dictionaryWithDictionary:@{@"variant": variant, @"stage": stage_name, @"code": code_path, @"c1": hex(code + c1o, c1t - c1o)}];
+     [rq addEntriesFromDictionary:answers];
+     if (local) rq[@"local"] = local;
+-    rq[@"depth_minus_w"] = totk_depth_near_minus_w() ? @YES : @NO;   // nvnDeviceSetDepthMode: NEAR_IS_MINUS_W needs the GL -> Metal clip-z conversion in every vertex shader
++    rq[@"depth_minus_w"] = @(depth_minus_w);   // nvnDeviceSetDepthMode: NEAR_IS_MINUS_W needs the GL -> Metal clip-z conversion in every vertex shader
+ #if TARGET_OS_IPHONE
+     // No translator on the phone (Python + .NET + SPIRV-Cross): the variant cache is translated on the Mac and copied over.
+     // A miss records the complete request (with the guest code bytes) under shader-requests/ for ios/tools/fill_shaders.py.
+@@ -212,7 +218,7 @@
+     NSData *jd = [NSData dataWithContentsOfFile:[totk_rt_dir() stringByAppendingFormat:@"/%@_b.json", variant]];
+     NSDictionary *refl = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
+     if (![refl isKindOfClass:[NSDictionary class]]) die("shader %s: reflection missing", variant.UTF8String);
+-    [vs addObject:@{@"variant": variant, @"deps": refl[@"deps"] ?: @{}}];
++    [vs addObject:@{@"variant": variant, @"deps": refl[@"deps"] ?: @{}, @"depth_minus_w": @(depth_minus_w)}];
+     [g_msl_checked addObject:variant];
+     [[json_string(vs) dataUsingEncoding:NSUTF8StringEncoding] writeToFile:index_path(shader) atomically:YES];
+     g_translated++;
+--- a/third_party/d2r_gfx/gfx/nvn/fps_overlay.c
++++ b/third_party/d2r_gfx/gfx/nvn/fps_overlay.c
+@@ -38,8 +38,10 @@
+ };
+ 
+ static _Atomic int g_hints_visible = 1;
+-int fps_overlay_hints_enabled(void) { return atomic_load_explicit(&g_hints_visible, memory_order_relaxed); }
+-int fps_overlay_toggle_hints(void) { return !atomic_fetch_xor_explicit(&g_hints_visible, 1, memory_order_relaxed); }
++static pthread_once_t hints_once = PTHREAD_ONCE_INIT;
++static void hints_init(void) { if (getenv("KIRBY_PREVIEW")) atomic_store(&g_hints_visible, 0); }
++int fps_overlay_hints_enabled(void) { pthread_once(&hints_once, hints_init); return atomic_load_explicit(&g_hints_visible, memory_order_relaxed); }
++int fps_overlay_toggle_hints(void) { pthread_once(&hints_once, hints_init); return !atomic_fetch_xor_explicit(&g_hints_visible, 1, memory_order_relaxed); }
+ 
+ int fps_overlay_enabled(void) {
+     static int on = -1;
+--- a/third_party/d2r_gfx/gfx/nvn/totk_mfx.h
++++ b/third_party/d2r_gfx/gfx/nvn/totk_mfx.h
+@@ -37,3 +37,6 @@
+ void mfx_mv_log(void);
+ int mfx_dump_due(void);
+ void mfx_dump(long frame, id<MTLTexture> swap_prev, id<MTLTexture> swap_cur);   // TOTK_MFX_DUMP=<dir>: scenes, depth, motion and output of three frames while the camera turns (diagnostic)   // TOTK_MFX_MVLOG=<n>: motion texture median every n interpolated frames (diagnostic)
++
++// Whole-frame optical-flow fallback: no game-specific depth/camera available.
++NSArray *mfx_capture_presented(id<MTLDevice> dev, id<MTL4CommandBuffer> cb, id<MTLTexture> src, int slot);
+--- a/third_party/d2r_gfx/gfx/nvn/totk_mfx.m
++++ b/third_party/d2r_gfx/gfx/nvn/totk_mfx.m
+@@ -137,7 +137,7 @@
+     drop(&g.ui);
+     for (int i = 0; i < MFX_OUT; i++) { drop(&g.out[i]); g.outv[i] = nil; }
+     MTLTextureUsage rt = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+-    for (int i = 0; i < 2; i++) g.scene[i] = mk(fmt, w, h, MTLTextureUsageShaderRead);   // blit copies of the canvas
++    for (int i = 0; i < 2; i++) g.scene[i] = mk(fmt, w, h, MTLTextureUsageShaderRead | (getenv("KIRBY_PREVIEW") ? MTLTextureUsageShaderWrite : 0));   // blit copies of the canvas
+     g.scene_fmt = fmt;
+     g.ui = mk(MTLPixelFormatRGBA16Float, w, h, rt);
+     for (int i = 0; i < MFX_OUT; i++) {
+@@ -384,3 +384,48 @@
+              (unsigned long long)g.miss[2], (unsigned long long)g.miss[3],
+              (unsigned long long)g.skip_first, (unsigned long long)g.skip_cut, (unsigned long long)g.skip_busy);
+ }
++
++/* Kirby has no TOTK camera block or shader hashes. Feed the final composed
++ * picture and let MetalFX estimate optical flow with zero camera motion.
++ * Flat depth is explicitly a fallback; text and disocclusions can ghost. */
++NSArray *mfx_capture_presented(id<MTLDevice> dev, id<MTL4CommandBuffer> cb, id<MTLTexture> src, int slot) {
++    if (!src || src.textureType != MTLTextureType2D) return nil;
++    ensure_out(dev, src.width, src.height, MTLPixelFormatRGBA16Float);
++    static id<MTLTexture> flat;
++    static id<MTLComputePipelineState> copy;
++    static id<MTL4ArgumentTable> args[3];
++    if (!flat || flat.width != src.width || flat.height != src.height) {
++        if (flat) { [g.rs removeAllocation:flat]; flat = nil; }
++        flat = mk(MTLPixelFormatDepth32Float, src.width, src.height, MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget);
++    }
++    if (!copy) {
++        NSError *error = nil;
++        NSString *source = @"#include <metal_stdlib>\nusing namespace metal;\n"
++          "kernel void frame_copy(texture2d<float,access::read> s [[texture(0)]], texture2d<float,access::write> d [[texture(1)]], uint2 p [[thread_position_in_grid]]) { if(p.x<d.get_width()&&p.y<d.get_height()) d.write(s.read(p),p); }";
++        id<MTLLibrary> lib = [dev newLibraryWithSource:source options:nil error:&error];
++        copy = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"frame_copy"] error:&error];
++        if (!copy) MDIE("whole-frame capture: %s", error.localizedDescription.UTF8String);
++        MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount = 2;
++        for (int i=0;i<3;i++) args[i] = [dev newArgumentTableWithDescriptor:ad error:&error];
++        MLOG("Kirby whole-frame optical-flow input enabled (flat depth, zero camera motion)");
++    }
++    id<MTLTexture> target = g.scene[g.cur];
++    [args[slot] setTexture:src.gpuResourceID atIndex:0]; [args[slot] setTexture:target.gpuResourceID atIndex:1];
++    id<MTL4ComputeCommandEncoder> e = [cb computeCommandEncoder];
++    [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];
++    [e setComputePipelineState:copy]; [e setArgumentTable:args[slot]];
++    [e dispatchThreads:MTLSizeMake(src.width,src.height,1) threadsPerThreadgroup:MTLSizeMake(16,16,1)]; [e endEncoding];
++    MTL4RenderPassDescriptor *pd = [MTL4RenderPassDescriptor new];
++    pd.colorAttachments[0].texture=g.ui; pd.colorAttachments[0].loadAction=MTLLoadActionClear;
++    pd.colorAttachments[0].storeAction=MTLStoreActionStore; pd.colorAttachments[0].clearColor=MTLClearColorMake(0,0,0,0);
++    pd.depthAttachment.texture=flat; pd.depthAttachment.loadAction=MTLLoadActionClear;
++    pd.depthAttachment.storeAction=MTLStoreActionStore; pd.depthAttachment.clearDepth=0.5;
++    id<MTL4RenderCommandEncoder> r=[cb renderCommandEncoderWithDescriptor:pd];
++    [r barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice]; [r endEncoding];
++    memset(g.cam,0,sizeof g.cam);
++    for(int i=0;i<4;i++)g.cam[12+i*5]=1;
++    g.cam[0]=g.cam[5]=g.cam[10]=1; g.cam[56]=0.1;g.cam[57]=1000;
++    g.cam[62]=(double)src.width/src.height;g.cam[70]=M_PI/3;
++    g.cam_ok=g.scene_ok=1;g.depth=flat;
++    return @[src,target,g.ui,flat,args[slot]];
++}
