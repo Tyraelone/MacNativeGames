@@ -24,6 +24,9 @@
    over as soon as it is decoded. */
 #include "runtime.h"
 #include "movie_host.h"
+#ifdef CASTLEVANIA_NATIVE_PROBE
+#include "movie_h264_vt.h"
+#endif
 #include <arm_neon.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -44,7 +47,7 @@ void movie_host_tick(void) {}
 #include <vpx/vpx_decoder.h>
 
 enum { IN_BUFS = 4, IN_CAP = 2 << 20, OUT_BUFS = 8, MAX_MOVIES = 16 };
-enum { TYPE_VP9 = 3, MODE_BUFFER = 1, FORMAT_NV12 = 4, FLAG_EOS = 4 };
+enum { TYPE_H264 = 1, TYPE_VP9 = 3, MODE_BUFFER = 1, FORMAT_NV12 = 4, FLAG_EOS = 4 };
 enum { ST_OK = 0, ST_ERROR = 0x1000, ST_NULL = 0x100b, ST_NOT_READY = 0x100c, ST_NO_OUTPUT = 0x100e, ST_NO_INPUT = 0x1011,
        ST_UNSUPPORTED = 0x2001, ST_NOT_CONFIGURED = 0x2002 };
 enum { EV_INPUT, EV_OUTPUT, EV_FORMAT, EV_ERROR };
@@ -53,9 +56,12 @@ typedef struct { int index; unsigned flags; int64_t time; } Ready;
 typedef struct { int index, offset, size; int64_t time; unsigned flags; } Pending;
 typedef struct {
     void *guest;                         /* the movie::Decoder object */
-    int format, configured, started, w, h, eos_in, format_sent, last_error;
+    int codec, format, configured, started, w, h, eos_in, format_sent, last_error;
     void **events;                       /* DecoderEvents: EventType* per EV_* */
     vpx_codec_ctx_t vpx; int vpx_live;
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    H264Host *h264;
+#endif
     uint8_t *in[IN_BUFS]; int in_free[IN_BUFS], nin_free;
     Pending pending[IN_BUFS]; int npending;
     uint8_t *out[OUT_BUFS]; int out_bytes[OUT_BUFS], out_held[OUT_BUFS];
@@ -67,6 +73,23 @@ typedef struct {
 } Movie;
 
 static MovieGuest G; static int g_ready;
+#ifdef CASTLEVANIA_NATIVE_PROBE
+/* Read-only packet probe for the game's non-VP9 movie decoders. It never
+   changes the library's return values or packet data. */
+typedef struct { void *obj; int type; uint8_t *input[16]; size_t capacity[16]; } OriginalProbe;
+static OriginalProbe original_probes[16];
+static int trace_original(void) { return getenv("CASTLEVANIA_MOVIE_TRACE") != NULL; }
+static OriginalProbe *original_probe(void *obj) {
+    for (size_t i=0;i<sizeof original_probes/sizeof original_probes[0];i++)
+        if (original_probes[i].obj==obj) return &original_probes[i];
+    return NULL;
+}
+static void original_probe_create(void *obj,int type) {
+    if (!trace_original()) return;
+    for (size_t i=0;i<sizeof original_probes/sizeof original_probes[0];i++)
+        if (!original_probes[i].obj) { original_probes[i]=(OriginalProbe){.obj=obj,.type=type};return; }
+}
+#endif
 static int g_negative = -1;   /* probe-movie negative controls only: 1 = U and V swapped, 2 = no format-changed event */
 static int negative(void) { if (g_negative < 0) { const char *e = getenv("TOTK_PROBE_NEGATIVE"); g_negative = e ? atoi(e) : 0; } return g_negative; }
 static uint64_t now_ns(void);
@@ -103,8 +126,15 @@ static void guest_init(void) {
         need_symbol((void **)&G.buf_set_data, "_ZN5movie6Buffer18SetDataAndCapacityEPvm");
         need_symbol((void **)&G.buf_base, "_ZNK5movie6Buffer4BaseEv");
         need_symbol((void **)&G.buf_capacity, "_ZNK5movie6Buffer8CapacityEv");
+#ifdef CASTLEVANIA_NATIVE_PROBE
+        need_symbol((void **)&G.buf_data, "_ZNK5movie6Buffer4DataEv");
+        need_symbol((void **)&G.buf_size, "_ZNK5movie6Buffer4SizeEv");
+#endif
         need_symbol((void **)&G.md_find_int32, "_ZNK5movie9MediaData9FindInt32EPKcPi");
         need_symbol((void **)&G.md_find_string, "_ZNK5movie9MediaData10FindStringEPKcPS2_");
+#ifdef CASTLEVANIA_NATIVE_PROBE
+        need_symbol((void **)&G.md_find_buffer, "_ZNK5movie9MediaData10FindBufferEPKcPPNS_6BufferE");
+#endif
         need_symbol((void **)&G.md_set_int32, "_ZN5movie9MediaData8SetInt32EPKci");
         need_symbol((void **)&G.md_set_rect, "_ZN5movie9MediaData7SetRectEPKciiii");
         need_symbol((void **)&G.md_set_string, "_ZN5movie9MediaData9SetStringEPKcS2_");
@@ -192,6 +222,22 @@ static int decode_one(Movie *m, Signals *s, const Pending *p) {
     if (freeslots < need) return 0;
     if (p->size > 0) {
         uint64_t t0 = now_ns();
+#ifdef CASTLEVANIA_NATIVE_PROBE
+        if (m->codec == TYPE_H264) {
+            int slot=free_out(m);if (slot<0) return 0;
+            int64_t frame_pts=p->time;
+            int got=h264_host_decode(m->h264,m->in[p->index]+p->offset,(size_t)p->size,p->time,
+                                     m->out[slot],(size_t)frame_bytes(m),&frame_pts);
+            if (got<0) {
+                m->errors++;m->last_error=ST_ERROR;note(m,s,EV_ERROR);
+                if (m->errors<=4) LOG("H.264 decode error on a %d-byte packet at %lld us",p->size,(long long)p->time);
+            } else if (got) {
+                if (!m->format_sent) {m->format_sent=1;note(m,s,EV_FORMAT);}
+                push_ready(m,s,slot,0,frame_pts,frame_bytes(m));m->frames++;
+            }
+        } else
+#endif
+        {
         vpx_codec_err_t e = vpx_codec_decode(&m->vpx, m->in[p->index] + p->offset, (unsigned)p->size, NULL, 0);
         if (e != VPX_CODEC_OK) {
             m->errors++; m->last_error = ST_ERROR; note(m, s, EV_ERROR);
@@ -210,6 +256,7 @@ static int decode_one(Movie *m, Signals *s, const Pending *p) {
                 m->frames++;
             }
         }
+        }
         m->decode_ns += now_ns() - t0;
         if (m->frames && m->frames % 300 == 0) LOG("%llu frames, decode %.2f ms per frame", (unsigned long long)m->frames, m->decode_ns / 1e6 / (double)m->frames);
     }
@@ -226,6 +273,9 @@ static void drain_pending(Movie *m, Signals *s) {
 }
 static void release_codec(Movie *m) {
     if (m->vpx_live) { vpx_codec_destroy(&m->vpx); m->vpx_live = 0; }
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    if (m->h264) { h264_host_destroy(m->h264);m->h264=NULL; }
+#endif
     for (int i = 0; i < IN_BUFS; i++) { free(m->in[i]); m->in[i] = NULL; }
     for (int i = 0; i < OUT_BUFS; i++) { free(m->out[i]); m->out[i] = NULL; }
     m->configured = m->started = 0; m->nin_free = m->npending = m->nready = m->ndecoded = 0; m->t0 = 0;
@@ -239,19 +289,26 @@ static void reset_queues(Movie *m) {
 typedef void (*ctor_fn)(void *, int, int, int, int);
 static void h_ctor(void *obj, int type, int format, int mode, int priority) {
     if (!g_ready) guest_init();
-    if (type != TYPE_VP9 || mode != MODE_BUFFER) {
+    if ((type != TYPE_VP9
+#ifdef CASTLEVANIA_NATIVE_PROBE
+        && type != TYPE_H264
+#endif
+        ) || mode != MODE_BUFFER) {
         LOG("decoder type %d mode %d format %d: left to the library (only VP9 in buffer mode runs on the host)", type, mode, format);
+#ifdef CASTLEVANIA_NATIVE_PROBE
+        original_probe_create(obj,type);
+#endif
         ((ctor_fn)G.orig[MOVIE_CTOR])(obj, type, format, mode, priority); return;
     }
     Movie *m = calloc(1, sizeof *m); if (!m) runtime_fail("movie decoder allocation");
-    m->guest = obj; m->format = format; pthread_mutex_init(&m->mu, NULL);
+    m->guest = obj; m->codec=type; m->format = format; pthread_mutex_init(&m->mu, NULL);
     pthread_mutex_lock(&g_lock); int i = 0;
     while (i < MAX_MOVIES && g_movies[i] && g_movies[i]->guest != obj) i++;
     if (i == MAX_MOVIES) runtime_fail("movie decoder table full");
     if (g_movies[i]) { LOG("【红】decoder object %p reused without destruction", obj); release_codec(g_movies[i]); free(g_movies[i]); }
     g_movies[i] = m; pthread_mutex_unlock(&g_lock);
     ((void **)obj)[0] = G.vptr; ((void **)obj)[1] = m;
-    LOG("VP9 decoder %p on the host (libvpx %s), output format %d", obj, vpx_codec_version_str(), format);
+    LOG("%s decoder %p on the host, output format %d", type==TYPE_VP9?"VP9":"H.264",obj,format);
 }
 static void destroy(void *obj) {
     pthread_mutex_lock(&g_lock); Movie *m = NULL;
@@ -270,24 +327,57 @@ static void h_d0(void *obj) { if (find(obj)) destroy(obj); ((obj_fn)G.orig[MOVIE
 
 typedef int (*md_fn)(void *, void *);
 static int h_configure(void *obj, void *format) {
-    Movie *m = find(obj); if (!m) return ((md_fn)G.orig[MOVIE_CONFIGURE])(obj, format);
+    Movie *m = find(obj); if (!m) {
+#ifdef CASTLEVANIA_NATIVE_PROBE
+        OriginalProbe *p=original_probe(obj);
+        if (p && format && trace_original()) {
+            const char *mime=NULL;int w=0,h=0,rate=0,channels=0;
+            G.md_find_string(format,"mime",&mime);
+            G.md_find_int32(format,"width",&w);G.md_find_int32(format,"height",&h);
+            G.md_find_int32(format,"sample-rate",&rate);G.md_find_int32(format,"channel-count",&channels);
+            LOG("original decoder type %d configure mime=%s video=%dx%d audio=%dHz/%dch",p->type,mime?mime:"(none)",w,h,rate,channels);
+            for (int i=0;i<3;i++) {
+                char key[16];snprintf(key,sizeof key,"csd-%d",i);
+                void *buf=NULL;
+                if (G.md_find_buffer(format,key,&buf) && buf) {
+                    const uint8_t *data=G.buf_data(buf);size_t size=G.buf_size(buf);
+                    fprintf(stderr,"[movie-probe] type=%d %s size=%zu first=",p->type,key,size);
+                    size_t n=size<48?size:48;for(size_t j=0;data&&j<n;j++)fprintf(stderr,"%02x",data[j]);fputc('\n',stderr);
+                }
+            }
+        }
+#endif
+        return ((md_fn)G.orig[MOVIE_CONFIGURE])(obj, format);
+    }
     if (!format) return ST_NULL;
     if (m->format != FORMAT_NV12) { LOG("【红】output format %d not implemented on the host (NV12 = 4 only)", m->format); return ST_UNSUPPORTED; }
     const char *mime = NULL; int w = 0, h = 0;
     G.md_find_string(format, "mime", &mime); G.md_find_int32(format, "width", &w); G.md_find_int32(format, "height", &h);
-    if (!mime || strcmp(mime, "video/x-vnd.on2.vp9") || w <= 0 || h <= 0 || w > 8192 || h > 8192 || (w | h) & 1) {
+    const char *expected=m->codec==TYPE_VP9?"video/x-vnd.on2.vp9":"video/avc";
+    if (!mime || strcmp(mime, expected) || w <= 0 || h <= 0 || w > 8192 || h > 8192 || (w | h) & 1) {
         LOG("【红】configure: mime %s %dx%d not supported", mime ? mime : "(none)", w, h); return ST_UNSUPPORTED;
     }
     pthread_mutex_lock(&m->mu);
     release_codec(m); m->w = w; m->h = h;
-    vpx_codec_dec_cfg_t cfg = {.threads = 4, .w = (unsigned)w, .h = (unsigned)h};
-    if (vpx_codec_dec_init(&m->vpx, vpx_codec_vp9_dx(), &cfg, 0) != VPX_CODEC_OK) runtime_fail("libvpx VP9 decoder initialisation");
-    m->vpx_live = 1;
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    if (m->codec==TYPE_H264) {
+        void *sps=NULL,*pps=NULL;
+        if (!G.md_find_buffer(format,"csd-0",&sps) || !G.md_find_buffer(format,"csd-1",&pps) || !sps || !pps)
+            runtime_fail("H.264 movie configuration missing SPS/PPS");
+        m->h264=h264_host_create(G.buf_data(sps),G.buf_size(sps),G.buf_data(pps),G.buf_size(pps),w,h);
+        if (!m->h264) runtime_fail("VideoToolbox H.264 decoder initialisation");
+    } else
+#endif
+    {
+        vpx_codec_dec_cfg_t cfg = {.threads = 4, .w = (unsigned)w, .h = (unsigned)h};
+        if (vpx_codec_dec_init(&m->vpx, vpx_codec_vp9_dx(), &cfg, 0) != VPX_CODEC_OK) runtime_fail("libvpx VP9 decoder initialisation");
+        m->vpx_live = 1;
+    }
     for (int i = 0; i < IN_BUFS; i++) if (!(m->in[i] = malloc(IN_CAP))) runtime_fail("movie input buffers");
     for (int i = 0; i < OUT_BUFS; i++) if (!(m->out[i] = malloc((size_t)frame_bytes(m)))) runtime_fail("movie output buffers");
     reset_queues(m); m->format_sent = 0; m->configured = 1; m->last_error = 0;
     pthread_mutex_unlock(&m->mu);
-    LOG("configured %dx%d VP9, %d input buffers of %d KiB, %d output frames of %d bytes", w, h, IN_BUFS, IN_CAP >> 10, OUT_BUFS, frame_bytes(m));
+    LOG("configured %dx%d %s, %d input buffers of %d KiB, %d output frames of %d bytes", w, h, m->codec==TYPE_VP9?"VP9":"H.264",IN_BUFS, IN_CAP >> 10, OUT_BUFS, frame_bytes(m));
     return ST_OK;
 }
 static int h_register_events(void *obj, void *events) {
@@ -334,10 +424,18 @@ static int h_flush(void *obj) {
     Movie *m = find(obj); if (!m) return ((int_fn)G.orig[MOVIE_FLUSH])(obj);
     pthread_mutex_lock(&m->mu);
     if (m->configured) {   /* drop queued work; the next input starts a new decode (after a seek: a key frame) */
+#ifdef CASTLEVANIA_NATIVE_PROBE
+        if (m->codec==TYPE_H264) {
+            if (h264_host_flush(m->h264)) runtime_fail("VideoToolbox H.264 decoder flush");
+            reset_queues(m);
+        } else
+#endif
+        {
         vpx_codec_destroy(&m->vpx); m->vpx_live = 0;
         vpx_codec_dec_cfg_t cfg = {.threads = 4, .w = (unsigned)m->w, .h = (unsigned)m->h};
         if (vpx_codec_dec_init(&m->vpx, vpx_codec_vp9_dx(), &cfg, 0) != VPX_CODEC_OK) runtime_fail("libvpx VP9 decoder re-initialisation");
         m->vpx_live = 1; reset_queues(m);
+        }
     }
     pthread_mutex_unlock(&m->mu);
     return ST_OK;
@@ -356,7 +454,16 @@ static int h_acquire_input(void *obj, int *index, int *remaining) {
 }
 typedef int (*ib_fn)(void *, int, void *);
 static int h_get_input(void *obj, int index, void *buf) {
-    Movie *m = find(obj); if (!m) return ((ib_fn)G.orig[MOVIE_GET_INPUT])(obj, index, buf);
+    Movie *m = find(obj); if (!m) {
+        int st=((ib_fn)G.orig[MOVIE_GET_INPUT])(obj,index,buf);
+#ifdef CASTLEVANIA_NATIVE_PROBE
+        OriginalProbe *p=original_probe(obj);
+        if (p && st==ST_OK && buf && index>=0 && index<16 && trace_original()) {
+            p->input[index]=G.buf_base(buf);p->capacity[index]=G.buf_capacity(buf);
+        }
+#endif
+        return st;
+    }
     if (!buf) return ST_NULL;
     if (index < 0 || index >= IN_BUFS || !m->in[index]) { G.buf_set_range(buf, 0, 0); G.buf_set_data(buf, NULL, 0); return ST_ERROR; }
     G.buf_set_range(buf, 0, IN_CAP); G.buf_set_data(buf, m->in[index], IN_CAP);
@@ -364,7 +471,19 @@ static int h_get_input(void *obj, int index, void *buf) {
 }
 typedef int (*send_fn)(void *, int, int, int, int64_t, unsigned);
 static int h_send_input(void *obj, int index, int offset, int size, int64_t time, unsigned flags) {
-    Movie *m = find(obj); if (!m) return ((send_fn)G.orig[MOVIE_SEND_INPUT])(obj, index, offset, size, time, flags);
+    Movie *m = find(obj); if (!m) {
+#ifdef CASTLEVANIA_NATIVE_PROBE
+        OriginalProbe *p=original_probe(obj);
+        if (p && trace_original() && size>0 && index>=0 && index<16 && offset>=0 && (size_t)offset+(size_t)size<=p->capacity[index] && p->input[index]) {
+            static int printed;
+            if (printed++<8) {
+                fprintf(stderr,"[movie-probe] type=%d index=%d size=%d pts=%lld flags=%u first=",p->type,index,size,(long long)time,flags);
+                int n=size<32?size:32;for(int i=0;i<n;i++)fprintf(stderr,"%02x",p->input[index][offset+i]);fputc('\n',stderr);
+            }
+        }
+#endif
+        return ((send_fn)G.orig[MOVIE_SEND_INPUT])(obj, index, offset, size, time, flags);
+    }
     if (index < 0 || index >= IN_BUFS || offset < 0 || size < 0 || (int64_t)offset + size > IN_CAP) return ST_ERROR;
     Signals s = {0};
     pthread_mutex_lock(&m->mu);

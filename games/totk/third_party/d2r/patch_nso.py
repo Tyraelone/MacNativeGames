@@ -20,7 +20,7 @@
 #   Registered observation gates (OBS, restricted by build ID): one instruction at the entry is replaced with "enter the host observation callback → execute the original instruction → jump back", so diagnostics modify zero code at runtime; listed in <name>.obs.tsv
 # The key page only stores "actual key number × 8" at the end of the data segment, and patch code fetches thread slots indirectly through the key page: the loader may use any key number.
 # Output: <name>.patched.bin (key page and patch area appended after the image at PATCH_OFF), <name>.fixups.tsv (layout and key page index header), <name>.gates.tsv, <name>.sites.tsv, <name>.cuts.tsv, <name>.obs.tsv
-import struct, re, sys, os
+import struct, re, sys, os, hashlib
 from itertools import combinations
 import lz4.block
 from capstone import *
@@ -340,6 +340,17 @@ def site_plain(ins):
     emit(LDP(S, T, 31, save - dlt)); emit(B(here(), ins.address + 4))
     return start
 
+def site_sp_from_x18(ins, old_sp_reg):
+    """For a pinned dynamic stack allocation, restore scratch through the
+    register that holds the old SP; the new SP has no static delta.
+    """
+    S, T = pick({18, old_sp_reg})
+    start = here()
+    emit(STP(S, T, 31, -16)); emit(MRS_TPIDRRO(T)); emit_slot_addr(T, S, 'K18'); emit(LDRX(S, T))
+    emit(subst(ins, S)); emit(STRX(S, T))
+    emit(LDP(S, T, old_sp_reg, -16)); emit(B(here(), ins.address + 4))
+    return start
+
 def site_cond(ins):
     w = struct.unpack('<I', ins.bytes)[0]
     S, T = pick(regs_in(ins))
@@ -388,6 +399,27 @@ def site_br(ins, base, count):
     for i in range(count):
         emit(0xF85F0000 | (31 << 5) | 16)      # ldur x16,[sp,#-16]
         emit(B(here(), base + 4 * i))
+    return start
+
+def site_br_targets(ins, targets):
+    """A pinned indirect dispatch: compare the virtual x18 target without changing
+    flags, then restore both scratch registers before branching to that target.
+    Unknown targets trap instead of silently branching to an unverified address.
+    """
+    start = here()
+    emit(STUR(16, 31, -16)); emit(STUR(17, 31, -24))
+    emit(MRS_TPIDRRO(16)); emit_slot_addr(16, 17, 'K18'); emit(LDRX(16, 16))
+    checks = []
+    for target in targets:
+        emit(ADRP(17, here(), target)); emit(ADDI(17, 17, target & 0xFFF))
+        emit(0xCA000000 | (16 << 16) | (17 << 5) | 17)  # eor x17,x17,x16; NZCV unchanged
+        checks.append((len(patch), target)); emit(NOP)  # cbz x17,<landing pad>
+    emit(0xD4200000)  # brk #0: target outside the pinned set
+    for check, target in checks:
+        pad = here(); source = PATCH_OFF + check; delta = pad - source
+        assert delta % 4 == 0 and -(1 << 20) <= delta < (1 << 20)
+        struct.pack_into('<I', patch, check, 0xB4000000 | (((delta >> 2) & 0x7FFFF) << 5) | 17)
+        emit(LDUR(16, 31, -16)); emit(LDUR(17, 31, -24)); emit(B(here(), target))
     return start
 
 def site_sysreg_read(ins, kind):
@@ -624,7 +656,7 @@ import bisect
 def func_of(a):
     i = bisect.bisect_right(starts, a) - 1
     return (starts[i], starts[i + 1] if i + 1 < len(starts) else TEXT_END) if i >= 0 else (a, a + 4)
-done = set(); windows = []; window_groups = []; jumps = {}; calls = {}
+done = set(); windows = []; window_groups = []; jumps = {}; indirects = {}; sp_pinned = set(); calls = {}
 # Signed 32-bit offset tables added in TOTK 1.4.3. Validate both the dispatch
 # instructions and every table entry before using a bounded landing-pad span.
 # Each tuple is (ADR base, table address, expected offsets, dispatch bytes).
@@ -662,6 +694,35 @@ SIGNED_TABLES = {'277178b7dba1b6d4949a84778d4abc58': {
                   '5f0e007108070054d279b2b852020e8b40021fd6'),
     },
 }
+# Castlevania Belmont's Curse 1.1.0: two callback dispatchers store one of the
+# listed function entry addresses in object+0x18, then restore live x16/x17
+# before `br x18`. Hashes pin the entire selector/dispatch code, including the
+# stores, to this NSO build. A target outside the listed set is a hard stop.
+# Tuple: (selector start, selector SHA-256, dispatch SHA-256, targets).
+INDIRECT_TARGETS = {'0f1169aa7d0fa4529c861f96adec306e': {
+    0x375a7ec: (0x375a6a0,
+                '56a6c2432b24ae851deed5715842b73adad0d5e21df3651b091abf7d870153c6',
+                '9004ede5073afe5e4037ef907c3567b60b7f8f5760a8e9dd9fb2a0c67eb50ff8',
+                (0x101330, 0x101770, 0x101390, 0x101400, 0x101470, 0x101560, 0x101690, 0x1014e0)),
+    0x3daf81c: (0x3daf6d0,
+                '000f8ca77e635244047fb6f6aae5d9bc088f3f40099fa11d8962c80bf1a429ce',
+                '9004ede5073afe5e4037ef907c3567b60b7f8f5760a8e9dd9fb2a0c67eb50ff8',
+                (0x179af0, 0x179f30, 0x179b50, 0x179bc0, 0x179c30, 0x179d20, 0x179e50, 0x179ca0)),
+}}
+# Dynamic stack allocations in the same build. The context hash includes the
+# old-SP capture and the x18 calculation, so the restore register is proven.
+# Tuple: (old-SP register, SHA-256 of the preceding four instructions plus MOV).
+SP_FROM_X18 = {'0f1169aa7d0fa4529c861f96adec306e': {
+    0x811950: (10, 'cf1dd4c36f00145833d69c79661752dcaad9c2d151380589a2fb6b441e65ba6d'),
+    0x17d68c0: (10, 'cf1dd4c36f00145833d69c79661752dcaad9c2d151380589a2fb6b441e65ba6d'),
+    0x198a300: (8, '182b04ee930bdff6122becb88fdb78339996f7fcd4af6ca9b5a61cd788973cec'),
+    0x34b9f4c: (8, '0294497c2840327ea21983f351d718744877d93d057d6507cce169f69bcb41b2'),
+    0x34bb7bc: (8, '96a8a43456d6d5ce0964bee5a5ab3e90b4314d0c7493faf12cf3168442b1219b'),
+    0x34c0cb8: (8, 'bc0c7447e8f3d41651638e5ca9e4d5b32e8a0ed0c4da300fd95fbc74cee9a128'),
+    0x34c2810: (8, 'bc0c7447e8f3d41651638e5ca9e4d5b32e8a0ed0c4da300fd95fbc74cee9a128'),
+    0x34cdb90: (8, '4394f1427478373166836e5a93365df345a919b19195e1bf247841cff7b5023e'),
+    0x34cfa0c: (8, 'bc0c7447e8f3d41651638e5ca9e4d5b32e8a0ed0c4da300fd95fbc74cee9a128'),
+}}
 funcs = sorted({func_of(a) for a, (k, _) in kinds.items() if k == 'x18'})
 for fa, fb in funcs:
     insl = list(md.disasm(bytes(IMG[fa:fb]), fa))
@@ -671,7 +732,22 @@ for fa, fb in funcs:
     for wseg in ws:
         windows.append(wseg); done |= {x.address for x in wseg}
     for j, ins in enumerate(insl):
+        if ins.address in SP_FROM_X18.get(BUILD_ID, {}):
+            _, context_hash = SP_FROM_X18[BUILD_ID][ins.address]
+            assert ins.mnemonic == 'mov' and ins.op_str == 'sp, x18' and \
+                hashlib.sha256(IMG[ins.address - 0x10:ins.address + 4]).hexdigest() == context_hash, \
+                f'dynamic SP {ins.address:x}'
+            sp_pinned.add(ins.address)
         if ins.mnemonic == 'br' and ins.op_str == 'x18':
+            if ins.address in INDIRECT_TARGETS.get(BUILD_ID, {}):
+                setup, selector_hash, dispatch_hash, targets = INDIRECT_TARGETS[BUILD_ID][ins.address]
+                assert hashlib.sha256(IMG[setup:ins.address - 0x3c]).hexdigest() == selector_hash, \
+                    f'indirect selector {ins.address:x}'
+                assert hashlib.sha256(IMG[ins.address - 0x3c:ins.address + 4]).hexdigest() == dispatch_hash, \
+                    f'indirect dispatch {ins.address:x}'
+                assert len(targets) == len(set(targets)) and all(0 <= t < TEXT_END and t % 4 == 0 for t in targets)
+                indirects[ins.address] = targets
+                continue
             base = width = None
             ctx = insl[max(0, j - 32):j]  # TOTK: arithmetic may follow the table-address setup.
             for p in reversed(ctx):
@@ -706,6 +782,7 @@ for fa, fb in funcs:
             t = x.operands[-1].imm
             assert not (t in inwin and t not in heads and (x.address, t) not in linked_edges), f'branch into window {x.address:x}'
 
+assert sp_pinned == set(SP_FROM_X18.get(BUILD_ID, {})), 'missing pinned dynamic SP site'
 # A call must always execute its preparation word; reject known alternate entry.
 if calls:
     call_targets = {a for a, _ in calls.values()}
@@ -764,7 +841,12 @@ for a in sorted(kinds):
     ins = dis(struct.unpack_from('<I', IMG, a)[0], a)
     if k == 'x18':
         m = ins.mnemonic
-        if m == 'br': st = site_br(ins, *jumps[a]); stat('br')
+        if a in SP_FROM_X18.get(BUILD_ID, {}):
+            old_sp_reg, _ = SP_FROM_X18[BUILD_ID][a]
+            st = site_sp_from_x18(ins, old_sp_reg); stat('dynamic_sp')
+        elif m == 'br':
+            if a in indirects: st = site_br_targets(ins, indirects[a]); stat('indirect_br')
+            else: st = site_br(ins, *jumps[a]); stat('br')
         elif m in ('cbz', 'cbnz', 'tbz', 'tbnz'): st = site_cond(ins); stat('cond')
         elif m in ('adr', 'adrp'): st = site_pcrel(ins); stat('pcrel')
         elif m in ('blr', 'ret', 'b', 'bl') or (m == 'ldr' and '[' not in ins.op_str): raise RuntimeError(f'{a:x} {m} {ins.op_str}')
@@ -1035,6 +1117,7 @@ with open(P('sites.tsv'), 'w') as f:
     for wseg in windows: f.write(f'{wseg[0].address:#x}\tW\t{wseg[-1].address + 4:#x}\n')
     for prefix, (call, _) in sorted(calls.items()): f.write(f'{prefix:#x}\tC\t{call + 4:#x}\n')
     for a, (b, c) in jumps.items(): f.write(f'{a:#x}\tJ\t{b:#x}\t{c}\n')
+    for a, targets in indirects.items(): f.write(f'{a:#x}\tI\t{','.join(f'{t:#x}' for t in targets)}\n')
 with open(P('cuts.tsv'), 'w') as f:
     f.write(f'# BUILD_ID\t{BUILD_ID}\n')
     for off, ob, nb, why, scope in cuts: f.write(f'{off:#x}\t{ob}\t{nb}\t{scope}\t{why}\n')   # 列：偏移 原字节 新字节 作用域 理由 | Columns: offset, original bytes, new bytes, scope, reason

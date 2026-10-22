@@ -31,6 +31,7 @@
 #include <mach/mach.h>
 #include <pthread/qos.h>
 #include <dlfcn.h>
+#include <stddef.h>
 
 #define R_TIMEOUT     0xEA01u   // 内核模块 1，描述 117 | Kernel module 1, description 117
 #define R_CANCELLED   0xEC01u   // 118
@@ -42,11 +43,21 @@
 
 enum { O_FREE, O_THREAD, O_EVENT_R, O_EVENT_W, O_SESSION, O_TMEM };   // O_SESSION / O_TMEM: IPC objects owned by ipc.c
 typedef struct event { int signaled; int refs; } event_t;
+/* libnx arm/thread_context.h: Horizon's 0x320-byte AArch64 register dump. */
+typedef struct {
+    uint64_t x[29], fp, lr, sp, pc;
+    uint32_t psr;
+    _Alignas(16) __uint128_t v[32];
+    uint32_t fpcr, fpsr;
+    uint64_t tpidr;
+} horizon_thread_context_t;
+_Static_assert(sizeof(horizon_thread_context_t)==0x320,"Horizon ThreadContext size");
+_Static_assert(offsetof(horizon_thread_context_t,v)==0x110,"Horizon FPU offset");
 typedef struct thr {
     uint32_t handle; uint64_t id;
     uint64_t entry, arg, stack_top; uint64_t host_context[2]; int prio, core; uint64_t mask;
     uint64_t born_ns, exit_ns; uint32_t born_tick, exit_tick;   // 建立 / 退出的时刻与当时的游戏拍（现场导出用：作业工人是不是在卡住前退的） | Time of creation / exit and the game tick at that time (for the state dump: did the job worker exit before the stall)
-    int started, exited, cancel;
+    int started, exited, cancel, suspended;
     pthread_t pt; pthread_cond_t cv;
     // 当前等待：kind 0=无 1=锁 2=条件 3=地址 4=同步对象
     // Current wait: kind 0=none 1=lock 2=condition 3=address 4=synchronization object
@@ -70,6 +81,13 @@ static thr_t *g_all;
 static pthread_mutex_t G = PTHREAD_MUTEX_INITIALIZER;
 #define MAX_H 4096
 static struct { int type; void *obj; } g_h[MAX_H];
+uint64_t runtime_thread_free_capacity(void) {
+    uint64_t free_count=0;
+    pthread_mutex_lock(&G);
+    for(int i=1;i<MAX_H;i++)if(!g_h[i].type)free_count++;
+    pthread_mutex_unlock(&G);
+    return free_count;
+}
 static pthread_key_t g_keythr;
 static uint64_t g_next_id = 0x51;
 static thr_t *g_wait;          // 全部在等的线程（锁 / 条件 / 地址 / 同步） | All waiting threads (lock / condition / address / synchronization)
@@ -131,7 +149,7 @@ static int core_allowed(const thr_t *t, int c) { return (int)((t->mask >> c) & 1
 static void core_grant(int c) {   // holding G: give free core c to the best waiter
     thr_t *b = NULL, **bp = NULL;
     for (thr_t **p = &g_core_wait; *p; p = &(*p)->cnext)
-        if (core_allowed(*p, c) && (!b || (*p)->prio < b->prio || ((*p)->prio == b->prio && (*p)->cseq < b->cseq))) { b = *p; bp = p; }
+        if (!(*p)->suspended && core_allowed(*p, c) && (!b || (*p)->prio < b->prio || ((*p)->prio == b->prio && (*p)->cseq < b->cseq))) { b = *p; bp = p; }
     if (!b) return;
     *bp = b->cnext; b->cnext = NULL; b->cur_core = c; b->core_since = now_ns(); g_core_owner[c] = b; pthread_cond_signal(&b->cv);
 }
@@ -140,6 +158,7 @@ static void core_put(thr_t *t) {   // holding G
     int c = t->cur_core; t->cur_core = -1; t->preempt = 0; g_core_owner[c] = NULL; core_grant(c);
 }
 static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask is handed over
+    while(t->suspended) pthread_cond_wait(&t->cv,&G);
     if (!cores_enabled() || t->cur_core >= 0) return;
     if (!(t->mask & ((1u << NCORE) - 1))) die("thread %#x core mask %#llx has no application core", t->handle, (unsigned long long)t->mask);
     int c = t->core >= 0 && t->core < NCORE && core_allowed(t, t->core) && !g_core_owner[t->core] ? t->core : -1;
@@ -147,7 +166,10 @@ static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask
     if (c >= 0) { t->cur_core = c; t->core_since = now_ns(); g_core_owner[c] = t; return; }
     t->cseq = ++g_wseq; t->cnext = g_core_wait; g_core_wait = t;
     for (int i = 0; i < NCORE; i++) if (core_allowed(t, i) && g_core_owner[i] && g_core_owner[i]->prio > t->prio) g_core_owner[i]->preempt = 1;
-    while (t->cur_core < 0) pthread_cond_wait(&t->cv, &G);
+    while (t->cur_core < 0 || t->suspended) {
+        if (t->cur_core >= 0 && t->suspended) core_put(t);
+        pthread_cond_wait(&t->cv, &G);
+    }
 }
 static thr_t *me_or_null(void) { return g_keythr ? pthread_getspecific(g_keythr) : NULL; }
 void runtime_thread_note_hle(unsigned i) { thr_t *t = me_or_null(); if (t) t->last_hle = (int)i + 1; }   // hle_stack.c, while tracing
@@ -163,7 +185,7 @@ void runtime_core_back(int *away) {
 }
 // Preemption point at SVC entry: a higher-priority thread waits for this core.
 void runtime_core_checkpoint(void) {
-    thr_t *t = me_or_null(); if (!t || !t->preempt) return;
+    thr_t *t = me_or_null(); if (!t || (!t->preempt&&!t->suspended)) return;
     pthread_mutex_lock(&G); t->preempt = 0; core_put(t); core_take(t); pthread_mutex_unlock(&G);
 }
 int runtime_current_core(void) { thr_t *t = me_or_null(); return t ? (t->cur_core >= 0 ? t->cur_core : t->core) : -1; }
@@ -376,6 +398,45 @@ int svc_thread(int num, uint64_t *regs) {
         return 1;
     }
     case 0x0C: { pthread_mutex_lock(&G);thr_t *t = h_get((uint32_t)regs[1], O_THREAD); regs[0] = t ? 0 : R_BAD_HANDLE; regs[1] = t ? (uint64_t)t->prio : 0; pthread_mutex_unlock(&G);return 1; }
+    case 0x32: { /* ThreadActivity_Runnable=0, ThreadActivity_Paused=1. */
+        if(regs[1]>1){regs[0]=R_BAD_STATE;return 1;}
+        pthread_mutex_lock(&G);thr_t *t=h_get((uint32_t)regs[0],O_THREAD);
+        if(getenv("TOTK_THREAD_ACTIVITY_LOG")) {
+            thr_t *caller=me_or_null();
+            fprintf(stderr,"[totk-thread] SetThreadActivity caller=%#x target=%#x activity=%llu from=%#llx\n",
+                    caller?caller->handle:0,(uint32_t)regs[0],(unsigned long long)regs[1],
+                    (unsigned long long)(caller?caller->last_lr:0));
+        }
+        if(t&&!t->exited){t->suspended=regs[1]==1;pthread_cond_signal(&t->cv);}
+        regs[0]=t&&!t->exited?0:R_BAD_HANDLE;
+        if(t==me_or_null()&&t->suspended){core_put(t);core_take(t);}
+        pthread_mutex_unlock(&G);return 1;
+    }
+    case 0x33: { /* GetThreadContext3: snapshot a thread paused by SVC 0x32. */
+        horizon_thread_context_t *out=(horizon_thread_context_t *)(uintptr_t)regs[0];
+        pthread_mutex_lock(&G);
+        thr_t *t=h_get((uint32_t)regs[1],O_THREAD);
+        if(!t||t->exited){regs[0]=R_BAD_HANDLE;pthread_mutex_unlock(&G);return 1;}
+        if(!out||!t->suspended||!t->mport||t==me_or_null()){
+            regs[0]=R_BAD_STATE;pthread_mutex_unlock(&G);return 1;
+        }
+        arm_thread_state64_t cpu; arm_neon_state64_t neon;
+        mach_msg_type_number_t nc=ARM_THREAD_STATE64_COUNT, nf=ARM_NEON_STATE64_COUNT;
+        kern_return_t kr=thread_suspend(t->mport);
+        if(kr==KERN_SUCCESS){
+            kr=thread_get_state(t->mport,ARM_THREAD_STATE64,(thread_state_t)&cpu,&nc);
+            if(kr==KERN_SUCCESS)kr=thread_get_state(t->mport,ARM_NEON_STATE64,(thread_state_t)&neon,&nf);
+            thread_resume(t->mport);
+        }
+        if(kr!=KERN_SUCCESS){regs[0]=R_BAD_STATE;pthread_mutex_unlock(&G);return 1;}
+        memset(out,0,sizeof(*out));
+        memcpy(out->x,cpu.__x,sizeof(out->x));
+        out->fp=arm_thread_state64_get_fp(cpu);out->lr=arm_thread_state64_get_lr(cpu);
+        out->sp=arm_thread_state64_get_sp(cpu);out->pc=arm_thread_state64_get_pc(cpu);
+        out->psr=cpu.__cpsr;
+        memcpy(out->v,neon.__v,sizeof(out->v));out->fpcr=neon.__fpcr;out->fpsr=neon.__fpsr;
+        regs[0]=0;pthread_mutex_unlock(&G);return 1;
+    }
     case 0x0D: { if(regs[1]<28||regs[1]>59){regs[0]=R_BAD_STATE;return 1;}pthread_mutex_lock(&G);thr_t *t = h_get((uint32_t)regs[0], O_THREAD); if (t) t->prio = (int)regs[1]; regs[0] = t ? 0 : R_BAD_HANDLE;pthread_mutex_unlock(&G); return 1; }
     case 0x0E: { pthread_mutex_lock(&G);thr_t *t = h_get((uint32_t)regs[2], O_THREAD);
                  regs[0] = t ? 0 : R_BAD_HANDLE; regs[1] = t ? (uint64_t)(uint32_t)t->core : 0; regs[2] = t ? t->mask : 0;pthread_mutex_unlock(&G); return 1; }
@@ -661,8 +722,8 @@ static void dump_threads(unsigned secs) {
         uint64_t htid = 0; if (t->pt) pthread_threadid_np(t->pt, &htid);
         fprintf(stderr, "[totk-dump] tid=%llu ", (unsigned long long)htid);
         fprintf(stderr, "core=%d mask=%#llx ", t->cur_core, (unsigned long long)t->mask);
-        fprintf(stderr, "h=%#x prio=%d %s wait=%d addr=%#llx key=%#llx tag=%#x word=%#x last_svc=%#x nsvc=%llu\n", t->handle, t->prio,
-                t->exited ? "exited" : t->started ? "run" : "new", t->wkind, (unsigned long long)t->waddr, (unsigned long long)t->wkey, t->wtag, word, t->last_svc, (unsigned long long)t->nsvc);
+        fprintf(stderr, "h=%#x prio=%d %s suspended=%d wait=%d addr=%#llx key=%#llx tag=%#x word=%#x last_svc=%#x nsvc=%llu\n", t->handle, t->prio,
+                t->exited ? "exited" : t->started ? "run" : "new", t->suspended, t->wkind, (unsigned long long)t->waddr, (unsigned long long)t->wkey, t->wtag, word, t->last_svc, (unsigned long long)t->nsvc);
         if (t->wkind == 4) { fprintf(stderr, "    waiting on %d handle(s):", t->nwh); for (int i = 0; i < t->nwh && i < 4; i++) fprintf(stderr, " %#x", t->wh[i]); fputc('\n', stderr); }
         if (t->last_hle) { char nm[256]; runtime_hle_describe((unsigned)t->last_hle - 1, nm, sizeof nm); fprintf(stderr, "    last host call while tracing: %s\n", nm); }
         dump_chain(t->last_lr, t->last_fp);

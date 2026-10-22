@@ -25,7 +25,7 @@ typedef struct {
 
 struct IpcSession;
 typedef void (*IpcHandler)(struct IpcSession *s, const IpcRequest *rq, IpcResponse *rs);
-typedef struct IpcSession { const char *name; IpcHandler handler; void *state; void (*close)(void *state); } IpcSession;
+typedef struct IpcSession { const char *name; IpcHandler handler; void *state; void (*close)(void *state); int domain; } IpcSession;
 
 /* Service registry: open(state out) creates per-session state for a named service. */
 typedef void *(*IpcOpen)(void);

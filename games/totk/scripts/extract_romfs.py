@@ -13,16 +13,38 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--keys',type=Path,required=True)
     parser.add_argument('--manifest',type=Path,default=Path('extracted/v0/extraction-manifest.json'))
+    parser.add_argument('--source',type=Path,help='DLC NSP with a PublicData NCA; requires --title-id')
+    parser.add_argument('--title-id',type=lambda value:value.upper(),help='expected DLC title ID with --source')
     parser.add_argument('--output',type=Path,default=Path('extracted/v0/romfs'))
     args=parser.parse_args(); require(not args.output.exists(),'Output already exists')
-    manifest=json.loads(args.manifest.read_text());record=manifest['program'];keys=load_keys(args.keys)
-    source=Path(manifest['source']);require(source.stat().st_size==manifest['source_size'],'Source size changed')
+    require(bool(args.source)==bool(args.title_id),'--source and --title-id must be used together')
+    if args.title_id:
+        require(len(args.title_id)==16 and all(c in '0123456789ABCDEF' for c in args.title_id),
+                'Expected a 16-digit uppercase title ID')
+    manifest=None if args.source else json.loads(args.manifest.read_text())
+    keys=load_keys(args.keys)
+    source=args.source if args.source else Path(manifest['source'])
+    if manifest:require(source.stat().st_size==manifest['source_size'],'Source size changed')
     with source.open('rb') as f:
-        _,entries=container_entries(f,source.stat().st_size)
-        actual,hdr=program_nca(nca_inventory(f,entries,keys),
-                               title_id=manifest.get('title_id', '0100F2C0115B6000'))
-        require(actual['name']==record['name'] and actual['size']==record['size'] and
-                record_offset(actual)==record_offset(record),'Source Program NCA changed; extract ExeFS again')
+        kind,entries=container_entries(f,source.stat().st_size)
+        records=nca_inventory(f,entries,keys)
+        if args.source:
+            require(kind=='nsp','Expected a DLC NSP')
+            require(all(r['title_id']==args.title_id for r,_ in records),'Mixed-title DLC package')
+            selected=[(r,h) for r,h in records if r['content_type']==5 and r['title_id']==args.title_id]
+            require(len(selected)==1,'Expected one PublicData NCA for DLC title')
+            actual,hdr=selected[0]
+            manifest=dict(source=str(source.resolve()),source_size=source.stat().st_size,
+                          container=kind,title_id=args.title_id,program=actual)
+        else:
+            require(kind==manifest['container'],'Source container type changed')
+            actual,hdr=program_nca(records,
+                                   title_id=manifest.get('title_id', '0100F2C0115B6000'),
+                                   allow_combined=kind=='xci')
+            record=manifest['program']
+            require(actual['name']==record['name'] and actual['size']==record['size'] and
+                    record_offset(actual)==record_offset(record),'Source Program NCA changed; extract ExeFS again')
+        record=manifest['program']
         ctr_key=nca_ctr_key(hdr,keys,common_tickets(f,entries))
         for i in range(4):
             start,end=struct.unpack_from('<II',hdr,0x240+i*16)
@@ -32,6 +54,12 @@ def main():
             if fs[2:5]!=bytes([0,3,3]):continue
             require(fs[8:12]==b'IVFC' and struct.unpack_from('<III',fs,12)==(0x20000,32,7),'Unsupported IVFC layout')
             levels=[struct.unpack_from('<QQII',fs,0x18+j*24) for j in range(6)]
+            useful=[0]*6
+            useful[-1]=levels[-1][1]
+            for level in range(4,-1,-1):
+                child_block=1<<levels[level+1][2]
+                useful[level]=((useful[level+1]+child_block-1)//child_block)*32
+                require(useful[level]<=levels[level][1],'IVFC hash storage too small')
             def read(relative,size):
                 require(0<=relative<=relative+size<=(end-start)*512,'Section bounds')
                 absolute=start*512+relative;aligned=absolute&~15;skip=absolute-aligned
@@ -49,7 +77,13 @@ def main():
                         chunk=read(offset+pos,min(8*1024*1024,size-pos))
                         for j in range(0,len(chunk),block):
                             payload=chunk[j:j+block]
-                            require(hashlib.sha256(payload+bytes(block-len(payload))).digest()==parent[index*32:index*32+32],f'IVFC level {level} block {index} failed')
+                            expected=parent[index*32:index*32+32]
+                            if index*block<useful[level]:
+                                require(hashlib.sha256(payload+bytes(block-len(payload))).digest()==expected,
+                                        f'IVFC level {level} block {index} failed')
+                            else:
+                                require(expected==bytes(32) and not any(payload),
+                                        f'IVFC level {level} unused block {index} is not zero')
                             index+=1
                         if captured is not None:captured.extend(chunk)
                         else:image.write(chunk);digest.update(chunk)
@@ -59,6 +93,7 @@ def main():
             files=index_romfs(image_path)
             report=dict(status='pass',source_size=source.stat().st_size,program=record['name'],section=i,ivfc_blocks=counts,romfs_size=levels[-1][1],romfs_sha256=digest.hexdigest(),files=files,integrity='FS header and all six IVFC levels verified; RSA signature not checked')
             (args.output/'index.json').write_text(json.dumps(report,indent=2)+'\n')
+            if args.source:(args.output/'source-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
             print(json.dumps(dict(status='pass',file_count=len(files),size=levels[-1][1],sha256=digest.hexdigest())),flush=True);return
     raise ValueError('No supported RomFS found')
 

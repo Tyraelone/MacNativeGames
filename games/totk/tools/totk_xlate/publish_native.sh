@@ -10,6 +10,12 @@ set -e
 HERE=${0:A:h}
 REPO=${HERE:h:h:h:h}
 DOTNET=${1:-dotnet}
+if command -v brew >/dev/null 2>&1; then
+  for DEP in openssl@3 brotli; do
+    DEP_LIB=$(brew --prefix "$DEP" 2>/dev/null)/lib
+    if [[ -d "$DEP_LIB" ]]; then export LIBRARY_PATH="$DEP_LIB${LIBRARY_PATH:+:$LIBRARY_PATH}"; fi
+  done
+fi
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT INT TERM HUP
 mkdir -p "$WORK/ryujinx-src" "$WORK/xlate"

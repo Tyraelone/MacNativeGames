@@ -26,6 +26,16 @@ pthread_key_t runtime_keys[8];
 static uint64_t timer_calls, svc_calls;
 _Noreturn void runtime_fail(const char *message) { fprintf(stderr,"[totk] FAIL: %s\n",message); exit(1); }
 static void need(bool c,const char *m) { if(!c) runtime_fail(m); }
+#ifdef CASTLEVANIA_NATIVE_PROBE
+static void *castlevania_ro_lookup_slot;
+static void castlevania_link_ro(void) {
+ void *global=runtime_symbol("_ZN2nn2ro6detail36g_pLookupGlobalManualFunctionPointerE");
+ need(global!=NULL,"nn::ro lookup slot owner");
+ uintptr_t current=0,p=(uintptr_t)&castlevania_ro_lookup_slot;
+ memcpy(&current,global,sizeof current);need(current==0,"nn::ro lookup slot already initialized");
+ memcpy(global,&p,sizeof p);
+}
+#endif
 static size_t page_up(size_t x) { return (x+0x3fff)&~(size_t)0x3fff; }
 static unsigned hash_name(const char *s) { unsigned h=2166136261u; for(;*s;s++)h=(h^(uint8_t)*s)*16777619u;return h; }
 static void make_hash(Module *m) {
@@ -217,7 +227,10 @@ static void relocate(Module *m) {
    const Symbol *s=&m->symbols[r->symbol];void *p=r->kind==1026?runtime_observer(s->name):NULL;
    if(!p)p=runtime_override(s->name);
    if(p)p=runtime_hle_wrap_named(p,s->name);   /* host replacements run on the thread's host stack */
-   if(!p)p=s->defined?(s->value<m->key_off?m->base+s->value:NULL):runtime_symbol(s->name);
+   /* A weak definition remains preemptible. In this title the SDK supplies
+      weak C++ new/delete while main supplies strong replacements; binding the
+      SDK's own PLT to its weak copy mixes two incompatible heaps. */
+   if(!p)p=s->defined&&s->binding!=2?(s->value<m->key_off?m->base+s->value:NULL):runtime_symbol(s->name);
    if(!p&&s->binding!=2){fprintf(stderr,"%s unresolved %s\n",m->name,s->name);runtime_fail("strong import unresolved");}
    if(!p)m->weak++;
    if(p&&!s->defined)m->cross++;
@@ -312,6 +325,35 @@ static void signal_hex(const char *label,uint64_t value) {
 #define HOST_CTR_EL0 0x8555c005ULL
 static void crash(int num,siginfo_t *info,void *context) {
  ucontext_t *u=context;
+#ifdef CASTLEVANIA_NATIVE_PROBE
+ if(num==SIGTRAP&&getenv("TOTK_NULL_TRAP")&&modules[0].base){
+  uint64_t pc=u->uc_mcontext->__ss.__pc,base=(uintptr_t)modules[0].base;
+  if(pc>=base){uint64_t off=pc-base;
+   for(size_t i=0;i<sizeof castlevania_null_sites/sizeof castlevania_null_sites[0];i++)
+    if(off==castlevania_null_sites[i].off){
+     uint8_t reg=castlevania_null_sites[i].reg;
+     if(u->uc_mcontext->__ss.__x[reg]){u->uc_mcontext->__ss.__pc+=4;return;}
+     signal_hex("[castlevania] null check failed at main+=",off);
+     signal_hex("[castlevania] zero register=",reg);
+     break;
+    }
+  }
+ }
+ if(num==SIGTRAP&&getenv("TOTK_BOUNDS_TRAP")&&modules[0].base){
+  uint64_t pc=u->uc_mcontext->__ss.__pc,base=(uintptr_t)modules[0].base;
+  if(pc>=base){uint64_t off=pc-base;
+   for(size_t i=0;i<sizeof castlevania_bounds_sites/sizeof castlevania_bounds_sites[0];i++)
+    if(off==castlevania_bounds_sites[i]){
+     uint32_t len=(uint32_t)u->uc_mcontext->__ss.__x[9],index=(uint32_t)u->uc_mcontext->__ss.__x[20];
+     if(len>index){u->uc_mcontext->__ss.__pc+=4;return;}
+     signal_hex("[castlevania] bounds check failed at main+=",off);
+     signal_hex("[castlevania] array length=",len);
+     signal_hex("[castlevania] index=",index);
+     break;
+    }
+  }
+ }
+#endif
  /* During save load, this optional game object can contain a tagged invalid
     reference. Treat it as absent, as the following cbz path expects. */
  if(num==SIGSEGV&&modules[0].base&&
@@ -457,11 +499,27 @@ int main(int argc,char **argv) {
  need(pthread_key_create(&environment_key,environment_destroy)==0,"thread environment key");
  for(unsigned i=0;i<NM;i++)map_module(&modules[i],argv[1]);
  for(unsigned i=0;i<NM;i++)relocate(&modules[i]);
+#ifdef CASTLEVANIA_NATIVE_PROBE
+ castlevania_link_ro();
+#endif
+#ifndef CASTLEVANIA_NATIVE_PROBE
  for(unsigned i=0;i<NM;i++)if(!strcmp(modules[i].name,"main"))runtime_game_patches(&modules[i]);
+#else
+ for(unsigned i=0;i<NM;i++)runtime_game_patch_trap_only(&modules[i]);
+#endif
 #if !TARGET_OS_IPHONE
  if(!strcmp(argv[2],"export-ios")){const char *out=getenv("TOTK_EXPORT_IOS");need(out!=NULL,"export-ios needs TOTK_EXPORT_IOS=<dir>");export_ios_text(argv[1],out);return 0;}
 #endif
  verify_identity(!strcmp(argv[2],"probe-identity-negative"));
  for(unsigned i=0;i<NM;i++){seal(&modules[i]);check_permissions(&modules[i]);}
+#ifdef CASTLEVANIA_NATIVE_PROBE
+ if(getenv("CASTLEVANIA_HLE_TRACE"))runtime_hle_trace_set(2);
+ if(!strcmp(argv[2],"probe-platform-null")){
+  uint64_t platform[12]={0};
+  int connected=((int(*)(void *,void *,void *))(void *)(modules[0].base+0x1bd6840))(platform,NULL,NULL);
+  need(connected==0,"missing platform connection must return false");
+  puts("{\"status\":\"pass\",\"probe\":\"probe-platform-null\"}");return 0;
+ }
+#endif
  if(!strcmp(argv[2],"probe-gpu-pool-retire")||!strcmp(argv[2],"probe-gpu-tex-slots")||!strcmp(argv[2],"probe-gpu-arg-epoch")||!strcmp(argv[2],"probe-gpu-anomaly")||!strcmp(argv[2],"probe-gpu-vertex-streams")||!strcmp(argv[2],"probe-gpu-layer-merge")||!strcmp(argv[2],"probe-gpu-cube-merge")||!strcmp(argv[2],"probe-gpu-texture-retire")||!strcmp(argv[2],"probe-gpu-linear-rt")||!strcmp(argv[2],"probe-gpu-storage-view")||!strcmp(argv[2],"probe-gpu-compressed-alias")||!strcmp(argv[2],"probe-gpu-upload-batch")||!strcmp(argv[2],"probe-gpu-ds-clear")||!strcmp(argv[2],"probe-gpu-ub-rename")||!strcmp(argv[2],"probe-gpu-ubo-snapshot")||!strcmp(argv[2],"probe-gpu-drv-c0")||!strcmp(argv[2],"probe-gpu-dispatch-chain")||!strcmp(argv[2],"probe-gpu-srgb-view")||!strcmp(argv[2],"probe-gpu-depth-output"))runtime_gpu_path_probe(argv[2]);else if(!strcmp(argv[2],"probe-memory"))runtime_memory_probe();else if(!strcmp(argv[2],"probe-gfx"))runtime_gfx_probe(0);else if(!strcmp(argv[2],"probe-vpool"))runtime_vpool_probe();else if(!strcmp(argv[2],"probe-gpu-widen")||!strcmp(argv[2],"probe-gpu-blockrt")||!strcmp(argv[2],"probe-gpu-midclear")||!strcmp(argv[2],"probe-gpu-winding")||!strcmp(argv[2],"probe-gpu-tile"))runtime_gpu_path_probe(argv[2]);else if(!strcmp(argv[2],"probe-audio"))runtime_audio_probe();else if(!strcmp(argv[2],"probe-gfx-negative"))runtime_gfx_probe(1);else if(!strcmp(argv[2],"probe"))probe();else if(!strcmp(argv[2],"probe-fs"))runtime_fs_probe();else if(!strcmp(argv[2],"probe-swkbd"))runtime_swkbd_probe();else if(!strcmp(argv[2],"probe-save"))runtime_save_probe();else if(!strcmp(argv[2],"boot")){if(getenv("TOTK_VERIFY_STARTUP")||getenv("TOTK_HEADLESS"))boot();else runtime_front_run(boot);}else runtime_fail("unknown mode");return 0;
 }

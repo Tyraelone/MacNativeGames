@@ -34,6 +34,7 @@ void runtime_frame_step_pin(double ms);                  /* game_patches.c: pin 
 void runtime_frame_step_update(uint64_t now_ns);
 void runtime_thread_note_hle(unsigned index);            /* threads.c: the calling guest thread's last host call (hletrace) */
 uint32_t runtime_thread_current_handle(void);            /* threads.c: handle of the calling guest thread, 0 on a host thread */
+uint64_t runtime_thread_free_capacity(void);              /* remaining guest object slots available for threads */
 void *runtime_hle_wrap_named(void *fn, const char *name);/* hle_stack.c: runtime_hle_wrap with a name for diagnostics */
 void runtime_hle_trace_set(int mode);                    /* hle_stack.c: 1 count host calls, 2 also log the first call of each, 0 stop and print */
 void runtime_hle_describe(unsigned index, char *out, size_t cap);   /* hle_stack.c: readable name of a host-call wrapper */

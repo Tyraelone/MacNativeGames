@@ -3,15 +3,21 @@
 #include <stdint.h>
 
 void *runtime_fs_host_override(const char *name);
+int runtime_fs_addon_available(int index);
 
 /* romfs.c */
 int runtime_romfs_owns(const char *path);
+int runtime_romfs_mounted(const char *name);
 int runtime_romfs_handle(uint64_t h);
 unsigned runtime_romfs_open(uint64_t *out, const char *path, int mode);
 unsigned runtime_romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uint64_t size);
 unsigned runtime_romfs_size(int64_t *out, uint64_t h);
 void runtime_romfs_close(uint64_t h);
 unsigned runtime_romfs_entry_type(int *out, const char *path);
+int runtime_romfs_dir_handle(uint64_t h);
+unsigned runtime_romfs_open_dir(uint64_t *out, const char *path, int mode);
+unsigned runtime_romfs_read_dir(int64_t *count, void *entries, uint64_t h, int64_t max);
+void runtime_romfs_close_dir(uint64_t h);
 
 /* account.c: the local user identity */
 void runtime_account_uid(uint64_t out[2]);

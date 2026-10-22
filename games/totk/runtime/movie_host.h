@@ -16,6 +16,9 @@ typedef struct {
     size_t (*buf_capacity)(const void *buf);
     bool (*md_find_int32)(const void *md, const char *key, int *value);
     bool (*md_find_string)(const void *md, const char *key, const char **value);
+    bool (*md_find_buffer)(const void *md, const char *key, void **value);
+    void *(*buf_data)(const void *buf);
+    size_t (*buf_size)(const void *buf);
     void (*md_set_int32)(void *md, const char *key, int value);
     void (*md_set_rect)(void *md, const char *key, int left, int top, int right, int bottom);
     void (*md_set_string)(void *md, const char *key, const char *value);

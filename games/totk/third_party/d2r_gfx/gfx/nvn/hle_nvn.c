@@ -268,6 +268,12 @@ NVN(nvnTexturePoolRegisterTexture, void, const NVNtexturePool *tp, int id, const
     totk_life_reg(id, (const tex_t *)t);
     mtl_reg_tex(id, (const tex_t *)t, (const view_t *)v); }
 
+/* Image descriptors address the same texture slots; the view marks their
+   writable format/layer interpretation for Metal. */
+NVN(nvnTexturePoolRegisterImage, void, const NVNtexturePool *tp, int id, const NVNtexture *t, const NVNtextureView *v) {
+    h_nvnTexturePoolRegisterTexture(tp,id,t,v);
+}
+
 NVN(nvnSamplerPoolInitialize, NVNboolean, NVNsamplerPool *sp, const NVNmemoryPool *p, ptrdiff_t off, int n) {
     *(dpool_t *)sp = (dpool_t){(const pool_t *)p, off, n}; OLOG("SamplerPool n=%d", n); return 1;
 }
@@ -302,7 +308,10 @@ NVN(nvnTextureBuilderSetSize3D, void, NVNtextureBuilder *b, int w, int h, int d)
 NVN(nvnTextureBuilderSetLevels, void, NVNtextureBuilder *b, int v) { TB(b)->d.levels = v; }
 NVN(nvnTextureBuilderSetFormat, void, NVNtextureBuilder *b, NVNformat f) { TB(b)->d.format = f; }
 // This adapter currently samples the depth plane; stencil-only sampling stops.
-NVN(nvnTextureBuilderSetDepthStencilMode, void, NVNtextureBuilder *b,NVNtextureDepthStencilMode mode){(void)b;if(mode!=NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH)die("stencil-plane texture sampling is not implemented");}
+NVN(nvnTextureBuilderSetDepthStencilMode, void, NVNtextureBuilder *b,NVNtextureDepthStencilMode mode){
+    if(mode!=NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH&&mode!=NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL)die("invalid texture depth/stencil mode");
+    TB(b)->d.stencil_mode=mode==NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL;
+}
 NVN(nvnTextureBuilderSetSwizzle, void, NVNtextureBuilder *b,NVNtextureSwizzle r,NVNtextureSwizzle g,NVNtextureSwizzle blue,NVNtextureSwizzle a){if((unsigned)r>5||(unsigned)g>5||(unsigned)blue>5||(unsigned)a>5)die("invalid NVN texture swizzle");TB(b)->d.swizzle_r=r;TB(b)->d.swizzle_g=g;TB(b)->d.swizzle_b=blue;TB(b)->d.swizzle_a=a;}
 NVN(nvnTextureBuilderSetSamples, void, NVNtextureBuilder *b, int s) { TB(b)->d.samples = s; }
 NVN(nvnTextureBuilderSetStride, void, NVNtextureBuilder *b, ptrdiff_t s) { TB(b)->d.stride = (uint32_t)s; }
@@ -506,12 +515,39 @@ NVN(nvnSamplerFinalize, void, NVNsampler *s) { ((samp_t *)s)->magic = 0; }
 NVN(nvnProgramInitialize, NVNboolean, NVNprogram *p, NVNdevice *d) {
     (void)d; memset(p, 0, sizeof(prog_t)); ((prog_t *)p)->magic = MAGIC('P', 'R', 'O', 'G'); return 1;
 }
-NVN(nvnProgramFinalize, void, NVNprogram *p) { x_drain(); mtl_prog_release((prog_t *)p); ((prog_t *)p)->magic = 0; }
+#ifdef CASTLEVANIA_NATIVE_PROBE
+static void castlevania_release_program_control(prog_t *p){
+    for(int i=0;i<6;i++){free(p->control_copy[i]);p->control_copy[i]=NULL;}
+}
+#endif
+NVN(nvnProgramFinalize, void, NVNprogram *p) {
+    x_drain();mtl_prog_release((prog_t *)p);
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    castlevania_release_program_control((prog_t *)p);
+#endif
+    ((prog_t *)p)->magic = 0;
+}
 NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData *sd) {
     NVN_BLOCKING();
     prog_t *o = (prog_t *)p;
     if (n < 0 || n > 6) { LOG("【红】ProgramSetShaders 阶段数 %d", n); return 0; }
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    castlevania_release_program_control(o);
+#endif
     mtl_prog_release(o); o->nstage = n; memcpy(o->sd, sd, n * sizeof *sd); o->serial = nvn_new_serial();
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    /* The NVN driver snapshots control data at this call. Unity reuses the
+       source allocation before the deferred Metal submission reads it. */
+    for(int i=0;i<n;i++){
+        uint32_t magic=0;
+        if(!sd[i].control)die("Castlevania NVN shader control pointer");
+        memcpy(&magic,sd[i].control,4);
+        if(magic!=0x98761234)die("Castlevania NVN shader control header");
+        void *copy=malloc(0x880);if(!copy)die("Castlevania shader control snapshot");
+        memcpy(copy,sd[i].control,0x880);
+        o->control_copy[i]=copy;o->sd[i].control=copy;
+    }
+#endif
     OLOG("ProgramSetShaders %p n=%d data0=%#llx", (void *)p, n, n ? (unsigned long long)sd[0].data : 0ull);
     return 1;
 }
@@ -577,6 +613,14 @@ NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     if (lg) { atomic_fetch_add(&g_sw_blocked[k], 1); atomic_fetch_add(&g_sw_ns[k], now_ns() - t0); }
     if (ok) survey_after_wait(s);
     return ok ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
+}
+/* Queue waits are ordered on the one Metal queue. Waiting on the CPU before
+   recording later commands is conservative and preserves the dependency. */
+NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) {
+    (void)q;
+    if(!s || ((const sync_t *)s)->magic != MAGIC('S','Y','N','C')) return 0;
+    NVNsyncWaitResult result=h_nvnSyncWait(s,UINT64_MAX);
+    return result==NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED || result==NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED;
 }
 NVN(nvnEventBuilderSetDefaults, void, NVNeventBuilder *b) { memset(b, 0, sizeof(ev_builder_t)); }
 NVN(nvnEventBuilderSetStorage, void, NVNeventBuilder *b, const NVNmemoryPool *p, int64_t off) { *(ev_builder_t *)b = (ev_builder_t){(const pool_t *)p, off}; }
@@ -723,6 +767,16 @@ static int reclog_limit(void) { static int v = -1; if (v < 0) { const char *e = 
 NVN(nvnCommandBufferBeginRecording, void, NVNcommandBuffer *c) {
     cmd_t *o = CB(c);
     if (o->recording) LOG("【红】BeginRecording 重入");
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    /* Castlevania re-records the same Unity command buffers every frame without
+       re-adding their control storage. BeginRecording starts a new descriptor
+       stream there; leaving ctl_used cumulative exhausts the 16 KiB grant
+       after 255 recordings and makes every later copy uncollectable. Keep the
+       old copies until their marks are overwritten and the pin scan retires
+       them, so an unexpectedly retained handle fails the normal liveness check. */
+    const char *reset = getenv("CASTLEVANIA_CONTROL_RESET");
+    if (!reset || strcmp(reset, "0")) o->ctl_used = 0;
+#endif
     o->recording = 1; o->cur = o->seg;   /* the previous recording was copied at EndRecording */
     o->rec_start = o->cmd_used;
     uint8_t *p = cmd_alloc(o, 8); put_hdr(p, OP_BEGIN, 8); o->hw_used -= 8;   /* BEGIN/END records have no hardware equivalent */
@@ -799,6 +853,16 @@ static void copy_touch(NVNcommandHandle h, uint64_t now) {
                 (unsigned long long)g_freed[i].stale_at, (unsigned long long)g_freed[i].used_at, (unsigned long long)now);
         die("command handle %#llx is not a live recording (freed or never recorded)", (unsigned long long)h);
     }
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    if (getenv("CASTLEVANIA_COPY_TRACE") && c->used_at && c->used_at != now) {
+        static _Atomic uint64_t reused;
+        uint64_t n = atomic_fetch_add(&reused, 1) + 1;
+        if (n <= 12 || n % 10000 == 0)
+            LOG("[cmd] Castlevania handle reused %llu: h=%p previous submit=%llu now=%llu made=%llu",
+                (unsigned long long)n, (void *)(uintptr_t)h, (unsigned long long)c->used_at,
+                (unsigned long long)now, (unsigned long long)c->made_at);
+    }
+#endif
     c->used_at = now;
 }
 
@@ -882,6 +946,17 @@ NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
     uintptr_t lo = (uintptr_t)o->ctl + (o->ctl_used < o->ctl_size ? o->ctl_used : 0);
     uintptr_t hi = o->ctl ? lo + 1 : 0;
     int token = o->ctl && o->ctl_used + 64 <= o->ctl_size && copy_token_on();   /* only inside the control memory the game gave */
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    if (getenv("CASTLEVANIA_COPY_TRACE")) {
+        static _Atomic uint64_t made, marked;
+        uint64_t n = atomic_fetch_add(&made, 1) + 1;
+        if (token) atomic_fetch_add(&marked, 1);
+        if (n <= 24 || n % 20000 == 0)
+            LOG("[cmd] Castlevania control %llu: cb=%p ctl=%p size=%zu used=%zu mark=%d marks=%llu copy=%zu bytes",
+                (unsigned long long)n, (void *)c, o->ctl, o->ctl_size, o->ctl_used, token,
+                (unsigned long long)atomic_load(&marked), malloc_size(copy - sizeof(copy_prefix)));
+    }
+#endif
     o->ctl_used += 64;
     if (token) copy_token_write(lo, copy);
     pthread_mutex_lock(&g_copy_mu);
@@ -1131,12 +1206,22 @@ static void pin_scan(size_t buckets) {   /* g_copy_mu and g_pin_mu held */
     size_t end = g_pin_scan_pos + buckets < g_pin_scan_cap ? g_pin_scan_pos + buckets : g_pin_scan_cap;
     volatile size_t k = g_pin_scan_pos; volatile uint32_t i = 0;
     sigjmp_buf jb;
-    if (sigsetjmp(jb, 1)) { runtime_fault_guard = NULL; copy_drop(&g_cbk[k], i, 1); g_copy_mark_faults++; }   /* reading copy (k, i)'s mark faulted: its control memory is unmapped */
+    if (sigsetjmp(jb, 1)) {
+        runtime_fault_guard = NULL;
+        /* pin_step runs after QueueSubmitCommands has marked the current
+           handles, but before this submission reads their recording bodies. */
+        if (g_submits && copy_of((NVNcommandHandle)(uintptr_t)g_cbk[k].v[i].copy)->used_at >= g_submits) i++;
+        else copy_drop(&g_cbk[k], i, 1);
+        g_copy_mark_faults++;
+    }   /* reading copy (k, i)'s mark faulted: its control memory is unmapped */
     g_mark_jb = &jb;
     for (; k < end; k++, i = 0) {
         copy_bucket *b = &g_cbk[k]; if (!b->used) continue;
         while (i < b->n) {
-            if (b->v[i].token && !copy_token_intact(&b->v[i])) { copy_drop(b, i, 1); continue; }   /* its control memory was reused: the copy goes */
+            if (b->v[i].token && !copy_token_intact(&b->v[i])
+                && (!g_submits || copy_of((NVNcommandHandle)(uintptr_t)b->v[i].copy)->used_at < g_submits)) {
+                copy_drop(b, i, 1); continue;
+            }   /* Its mark is gone, but a handle in this very submit must finish replay first. */
             pin_mark_ops(b->v[i].copy); g_pin_scanned++; i++;
         }
     }
@@ -2119,6 +2204,18 @@ static void set_time_constraint(uint64_t period_ns);
 static void rt_comp_tick(uint64_t period_ns);
 static int g_uncapped;   // TOTK_UNCAPPED configured, see present_cfg; suspended while frame interpolation paces the game (uncapped_now)
 static int g_paced_hz;   // the display-following rate, used instead of UNCAPPED_HZ while interpolation paces the game
+#ifdef CASTLEVANIA_NATIVE_PROBE
+/* Castlevania has its own 2-tick (60 fps on a 120 Hz screen) interval. The
+   original cadence remains the default; key 2 can request one or four display
+   ticks without changing the game's clock or the other title's MFX policy. */
+static _Atomic int g_castlevania_frame_mode;
+int nvn_castlevania_frame_mode_cycle(void) {
+    int next=(atomic_fetch_add(&g_castlevania_frame_mode,1)+1)%3;
+    atomic_store(&g_castlevania_frame_mode,next);
+    LOG("[castlevania] key 2 frame cadence: %s",next==1?"display refresh":next==2?"30 fps":"game default");
+    return next;
+}
+#endif
 #include "totk_mfx_mode.h"   /* totk_mfx.m: frame interpolation mode of this game frame (TOTK_MFX, key 2) */
 /* TOTK: frame interpolation at 30 fps or at half the refresh rate paces the game itself, so it suspends the uncapped mode;
    the uncapped interpolation mode keeps it. Key 2 cycles the modes at run time (2026-10-16 night). */
@@ -2472,6 +2569,11 @@ static void present_cfg(const win_t *o) {
 }
 static unsigned present_ticks(const win_t *o) {   /* display ticks per game frame */
     present_cfg(o);
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    int cv_mode=atomic_load(&g_castlevania_frame_mode);
+    if (cv_mode==1) return 1;
+    if (cv_mode==2) return g_hz>0?(unsigned)((g_hz+15)/30):4;
+#endif
     /* TOTK_MFX / key 2: MetalFX makes the frame between two game frames. Half the refresh rate: the game presents every
        second display tick (50 + 50 on a 100 Hz display); 30+30: hz / 30 ticks (2 at 60 Hz; at 100 Hz the own clock paces,
        mfx_own_clock). Held here and not only by the game's controller, because the code carries the 60 FPS patch (the

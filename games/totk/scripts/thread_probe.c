@@ -5,7 +5,9 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <mach/mach_time.h>
+#include <unistd.h>
 static atomic_uint calls,environments;
+static atomic_uint pause_calls, pause_stop;
 _Noreturn void runtime_fail(const char *message){fprintf(stderr,"FAIL %s\n",message);exit(1);}
 void *runtime_symbol(const char *name){(void)name;runtime_fail("unexpected guest symbol");}
 void runtime_thread_init(void){atomic_fetch_add(&environments,1);}
@@ -13,6 +15,14 @@ uint64_t runtime_now_ns(void){mach_timebase_info_data_t t;mach_timebase_info(&t)
 static void need(int c,const char *m){if(!c)runtime_fail(m);}
 static void kernel(unsigned id,uint64_t *r){need(svc_thread((int)id,r)==1,"service dispatch");}
 static void child(uint64_t arg){atomic_fetch_add(&calls,1);uint64_t r[31]={arg};kernel(0x11,r);need(r[0]==0,"child signal");kernel(0x0a,r);runtime_fail("ExitThread returned");}
+static void pause_child(uint64_t arg){
+ (void)arg;
+ while(!atomic_load(&pause_stop)){
+  atomic_fetch_add(&pause_calls,1);
+  uint64_t r[31]={1000000};kernel(0x0b,r);
+ }
+ uint64_t r[31]={0};kernel(0x0a,r);runtime_fail("paused child ExitThread returned");
+}
 int main(void){
  uint32_t main=svc_thread_main_init();uint64_t r[31]={0};r[1]=main;kernel(0xc,r);need(r[0]==0&&r[1]==44,"initial priority");
  r[0]=main;r[1]=31;kernel(0xd,r);r[1]=main;kernel(0xc,r);need(r[0]==0&&r[1]==31,"priority roundtrip");
@@ -33,5 +43,16 @@ int main(void){
   count++;
  }
  need(atomic_load(&environments)==32,"per-thread setup");
+ uint8_t *pause_stack=mmap(NULL,2<<20,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);need(pause_stack!=MAP_FAILED,"pause guest stack");
+ r[1]=(uintptr_t)pause_child;r[2]=0;r[3]=(uintptr_t)pause_stack+(2<<20);r[4]=44;r[5]=1;kernel(8,r);need(!r[0],"pause thread create");uint32_t pause_thread=(uint32_t)r[1];
+ r[0]=pause_thread;kernel(9,r);need(!r[0],"pause thread start");
+ usleep(20000);need(atomic_load(&pause_calls)>0,"pause thread ran");
+ r[0]=pause_thread;r[1]=1;kernel(0x32,r);need(!r[0],"pause thread activity");
+ usleep(20000);unsigned held=atomic_load(&pause_calls);usleep(20000);need(atomic_load(&pause_calls)==held,"paused thread must stop");
+ _Alignas(16) uint8_t context[0x320]={0};r[0]=(uintptr_t)context;r[1]=pause_thread;kernel(0x33,r);need(!r[0],"get paused thread context");
+ uint64_t sp=0,pc=0;__builtin_memcpy(&sp,context+0xf8,8);__builtin_memcpy(&pc,context+0x100,8);need(sp&&pc,"paused context has stack and PC");
+ r[0]=pause_thread;r[1]=0;kernel(0x32,r);need(!r[0],"resume thread activity");
+ atomic_store(&pause_stop,1);r[1]=(uintptr_t)&pause_thread;r[2]=1;r[3]=1000000000;kernel(0x18,r);need(!r[0],"resumed thread exited");
+ r[0]=pause_thread;kernel(0x16,r);need(!r[0],"close paused thread");need(munmap(pause_stack,2<<20)==0,"reclaim pause guest stack");
  printf("{\"status\":\"pass\",\"native_threads\":%u,\"events\":%u,\"scope\":\"production SVC dispatcher, host stack switching, event/thread waits, priority and invalid handles\"}\n",count,count);return 0;
 }

@@ -2,6 +2,7 @@
 #include "runtime.h"
 #include <TargetConditionals.h>
 #include "ipc.h"
+#include "fs_host.h"
 #include <mach/mach.h>
 #include "mach_vm_compat.h"
 #include <stdio.h>
@@ -176,10 +177,15 @@ void runtime_guest_resident(uint64_t *resident,uint64_t *dirty,uint64_t *compres
 }
 static void host_diag_init(void) { fprintf(stderr,"[totk] native diagnostics initialized\n"); }
 static void host_oe_init(void) { fprintf(stderr,"[totk] application environment: local macOS process\n"); }
-static void host_aoc_init(void) { fprintf(stderr,"[totk] add-on content: no DLC\n"); }
-static int host_aoc_count(void) { return 0; }
+static void host_aoc_init(void) { fprintf(stderr,"[totk] add-on content: %d available\n",runtime_fs_addon_available(1)+runtime_fs_addon_available(2)); }
+static int host_aoc_count(void) { return runtime_fs_addon_available(1)+runtime_fs_addon_available(2); }
 static int host_aoc_list(int *out,int offset,int count) {
- (void)out;if(offset<0||count<0)runtime_fail("invalid add-on content list range");return 0;
+ if(offset<0||count<0||(!out&&count))runtime_fail("invalid add-on content list range");
+ int ids[2],available=0,copied=0;
+ for(int id=1;id<=2;id++)if(runtime_fs_addon_available(id))ids[available++]=id;
+ for(int i=offset;i<available&&copied<count;i++)out[copied++]=ids[i];
+ if(getenv("TOTK_AOC_LOG"))fprintf(stderr,"[totk] AOC list offset=%d max=%d copied=%d\n",offset,count,copied);
+ return copied;
 }
 static void host_error_init(void) { fprintf(stderr,"[totk] error contexts: local diagnostics\n"); }
 static void host_fs_init(void) { runtime_fs_init(); }
@@ -209,6 +215,18 @@ static void operation_enabled(unsigned value) {operation_notification=value&255;
 static void performance_enabled(unsigned value) {performance_notification=value&255;}
 static uint32_t performance_configuration[2];
 static void performance_config(int mode,int cfg) {if(mode<0||mode>1)runtime_fail("invalid performance mode");performance_configuration[mode]=(uint32_t)cfg;fprintf(stderr,"[totk] performance request mode=%d cfg=%x: native macOS scheduling\n",mode,(uint32_t)cfg);}
+#ifdef CASTLEVANIA_NATIVE_PROBE
+/* The SDK implementation dereferences Horizon's exit-request manager, which
+   is absent in the local process. There is no external OS exit request here;
+   keep section nesting for diagnostics while the window's close path handles
+   player initiated shutdown and save flushing. */
+static _Atomic int exit_section_depth;
+static void enter_exit_section(void) { atomic_fetch_add(&exit_section_depth,1); }
+static void leave_exit_section(void) {
+ int old=atomic_fetch_sub(&exit_section_depth,1);
+ if(old<=0)runtime_fail("unbalanced exit request handling section");
+}
+#endif
 static uint64_t desired_language(void) {
  const char *explicit=getenv("TOTK_LANG");char code[8]={0};
  if(explicit){if(strlen(explicit)>7)runtime_fail("language code too long");memcpy(code,explicit,strlen(explicit));}
@@ -243,6 +261,10 @@ void *runtime_override(const char *name) {
   {"_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi",performance_config},
   {"_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE",cpu_boost},{"_ZN2nn2oe16GetOperationModeEv",operation_mode},{"_ZN2nn2oe18GetPerformanceModeEv",performance_mode},
   {"_ZN2nn2oe20SetFocusHandlingModeENS0_17FocusHandlingModeE",focus_mode},{"_ZN2nn2oe20GetCurrentFocusStateEv",focus_state},
+#ifdef CASTLEVANIA_NATIVE_PROBE
+  {"_ZN2nn2oe31EnterExitRequestHandlingSectionEv",enter_exit_section},
+  {"_ZN2nn2oe31LeaveExitRequestHandlingSectionEv",leave_exit_section},
+#endif
   {"_ZN2nn2oe28SetResumeNotificationEnabledEb",resume_enabled},{"_ZN2nn2oe42SetOperationModeChangedNotificationEnabledEb",operation_enabled},{"_ZN2nn2oe44SetPerformanceModeChangedNotificationEnabledEb",performance_enabled},
   {"nndiagStartup",host_diag_init},{"_ZN2nn2oe10InitializeEv",host_oe_init},{"_ZN2nn3aoc10InitializeEv",host_aoc_init},
   {"_ZN2nn3aoc17CountAddOnContentEv",host_aoc_count},{"_ZN2nn3aoc16ListAddOnContentEPiii",host_aoc_list},
@@ -280,6 +302,7 @@ uint64_t runtime_svc(unsigned num,uint64_t *r,const char *module,uint64_t offset
   case 14:value=STACK_START;break;case 15:value=STACK_SIZE;break;
   case 16:value=SYSTEM_RESOURCE_BUDGET;break;case 17:value=sizeof(stack_maps)+sizeof(alias_pages);break;case 18:value=0x0100f2c0115b6000ULL;break;
   case 20:value=(uintptr_t)user_exception_context;break;   /* UserExceptionContextAddress: SDK stores e.g. the dying-message region at +0x1c0 */case 23:value=1;break;
+  case 24:value=runtime_thread_free_capacity();break; /* FreeThreadCount */
   /* AliasRegionExtraSize (18.0.0+): our alias reservation contains no
    * kernel-owned extension outside the range reported by ids 2 and 3. */
   case 28:value=0;break;

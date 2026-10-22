@@ -22,6 +22,7 @@ ap.add_argument('dir'); ap.add_argument('mod'); ap.add_argument('nso')
 ap.add_argument('--seed', type=int, default=1); ap.add_argument('--jobs', type=int, default=os.cpu_count())
 ap.add_argument('--min-eff', type=int, default=2); ap.add_argument('--max-extra', type=int, default=16)
 ap.add_argument('--mutate', type=int, default=300); ap.add_argument('--tsv')
+ap.add_argument('--only', help='comma-separated hexadecimal site offsets for a focused check')
 A = ap.parse_args()
 
 IB = 0x100000000
@@ -64,15 +65,28 @@ orig, _ = deexcl(orig); pat, _ = deexcl(pat)
 
 md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
 md.detail = True
-sites = []; winend = {}; brinfo = {}; callinfo = {}; ngate = 0
+sites = []; winend = {}; brinfo = {}; indirect = {}; callinfo = {}; ngate = 0
 for l in open(f'{DIR}/{MOD}.sites.tsv'):
     f = l.split(); a = int(f[0], 16)
     if f[1] == 'W': winend[a] = int(f[2], 16); sites.append(a)
     elif f[1] == 'C': winend[a] = int(f[2], 16); callinfo[a] = winend[a] - 4; sites.append(a)
     elif f[1] == 'J': brinfo[a] = (int(f[2], 16), int(f[3]))
+    elif f[1] == 'I': indirect[a] = tuple(int(x, 16) for x in f[2].split(','))
     elif f[1] in ('svc', 'cntpct', 'cntvct'): ngate += 1      # 宿主门：语义由宿主定，只做结构核对 | Host gate: semantics are defined by the host, only a structural check is done
     else: sites.append(a)
 atomic_groups = nsoimg.exclusive_groups(orig, [(lo, hi) for lo, hi in winend.items() if lo not in callinfo])
+if A.only:
+    selected = {int(x, 16) for x in A.only.split(',')}
+    if not selected or selected - set(sites): ap.error(f'unknown --only sites: {selected - set(sites)}')
+    sites = sorted(selected)
+
+# The recorded dynamic-SP rewrites use x8 or x10 as the unchanged old-SP
+# anchor. Randomized trials must provide a valid old stack and aligned target.
+SP_ANCHORS = {
+    0x811950: 10, 0x17d68c0: 10, 0x198a300: 8,
+    0x34b9f4c: 8, 0x34bb7bc: 8, 0x34c0cb8: 8,
+    0x34c2810: 8, 0x34cdb90: 8, 0x34cfa0c: 8,
+} if open(A.nso, 'rb').read(0x50)[0x40:0x50].hex() == '0f1169aa7d0fa4529c861f96adec306e' and MOD == 'main' else {}
 
 def btarget(b, o):
     w = struct.unpack_from('<I', b, o)[0]; imm = w & 0x3FFFFFF
@@ -227,12 +241,16 @@ def work(job):
     out = []
     for a in chunk:
         n = eff = 0; diffs = []
-        kinds = [0, 1] + ([] if a in brinfo else [2])
+        kinds = [0, 1] + ([] if a in brinfo or a in indirect else [2])
         extra = 0
         while kinds or (eff < A.min_eff and extra < A.max_extra):
             if kinds: kind = kinds.pop(0)
             else: kind = (1, 0)[extra % 2]; extra += 1
             initial = init_state(rng, kind, brinfo.get(a))
+            if a in indirect: initial['g'][18] = IB + rng.choice(indirect[a])
+            if a in SP_ANCHORS:
+                initial['g'][SP_ANCHORS[a]] = SP0
+                initial['g'][18] = SP0 - (0x10 * rng.randrange(0, 33))
             if a in callinfo:
                 initial['g'][18] = IB + 0x1000 + 4 * rng.randrange(1024)
             same, both, fl = trial(UO, SO, UP, SP, a, initial)

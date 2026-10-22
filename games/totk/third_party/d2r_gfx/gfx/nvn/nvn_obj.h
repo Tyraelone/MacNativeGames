@@ -40,7 +40,7 @@ typedef struct {
 // TOTK: the game reserves 16 bytes for NVNtextureView on its stack (main+0x823398 SetDefaults at sp+0x30, its own
 // data at sp+0x40), so the view is packed into 16 bytes. swz = NVN view swizzle selectors.
 typedef struct {
-    uint8_t set_levels : 1, set_layers : 1, set_format : 1, set_target : 1, set_swizzle : 1, pad0 : 3;
+    uint8_t set_levels : 1, set_layers : 1, set_format : 1, set_target : 1, set_swizzle : 1, set_ds_mode : 1, stencil_mode : 1, pad0 : 1;
     uint8_t base_level, nlevels, target; uint16_t min_layer, nlayers; uint16_t format; uint8_t swz[4]; uint8_t pad1[2];
 } view_t;
 _Static_assert(sizeof(view_t) == 16, "NVNtextureView is 16 bytes in TOTK's NVN");
@@ -53,7 +53,11 @@ typedef struct { NVNdevice *dev; samp_par p; } samp_builder_t;                  
 typedef struct { uint32_t magic; samp_par p; } samp_t;                                        FITS(samp_t, NVNsampler);
 _Static_assert(sizeof(samp_par) == 44, "TOTK sampler parameters");
 
-typedef struct { uint32_t magic, nstage; NVNshaderData sd[6]; uint64_t serial; } prog_t;     FITS(prog_t, NVNprogram);   // serial：回放层解析结果的表键 | serial: table key for the replay layer's resolved result
+typedef struct { uint32_t magic, nstage; NVNshaderData sd[6]; uint64_t serial;
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    void *control_copy[6]; /* Unity reuses the control buffer after ProgramSetShaders. */
+#endif
+} prog_t;     FITS(prog_t, NVNprogram);   // serial：回放层解析结果的表键 | serial: table key for the replay layer's resolved result
 
 typedef struct { uint32_t magic, fenced; uint64_t fence; } sync_t;                            FITS(sync_t, NVNsync);
 typedef struct { const pool_t *pool; int64_t off; } ev_builder_t;                             FITS(ev_builder_t, NVNeventBuilder);

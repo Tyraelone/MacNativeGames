@@ -2510,7 +2510,8 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     d.usage = MTLTextureUsageShaderRead | (fmt_compressed(t->d.format) || packaged ? 0 : MTLTextureUsageRenderTarget)
             | (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE ? MTLTextureUsageShaderWrite : 0)   // 图像用途：着色器可写（计算核生成 3D 调色表等） | Image usage: shader-writable (compute kernels generating the 3D color lookup table, etc.)
             | (t->d.target == 8 && t->d.width <= 64 && !fmt_compressed(t->d.format) && !packaged ? MTLTextureUsageShaderWrite : 0)   // TOTK: small cube render targets: the cube-merge copy-out kernel writes them (nvn_cube_group.h)
-            | (unp ? MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView : 0);
+            | (unp ? MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView : 0)
+            | (t->d.stencil_mode ? MTLTextureUsagePixelFormatView : 0);
     // TOTK: Metal rejects descriptor swizzle on render targets and on shader-writable textures (image use, and BC textures
     // decoded by the bcd kernel on GPUs without BC support); those get the swizzle on their sampling view (tex_by_id).
     MTLTextureSwizzleChannels sw;
@@ -4701,9 +4702,14 @@ static int drv_scan(NvShader *o, NSString *src) {   // src: the full MSL (iOS do
         int dyn = end == q || !(*end == ']' || (*end == 'u' && end[1] == ']'));
         if (!o->rf.drv_read[bank]) o->drv_scanned[bank] = 1;
         o->rf.drv_read[bank] = 1;
-        if (!(dyn || !drv_fillable(o->stage, bank, (unsigned)idx * 16))) continue;
+        unsigned component = 0;
+        if (!dyn && end[1] == '.' && end[2]) {
+            const char *letters="xyzw", *xyzw = strchr(letters,end[2]);
+            if (xyzw) component = 4u * (unsigned)(xyzw-letters);
+        }
+        if (!(dyn || !drv_fillable(o->stage, bank, (unsigned)idx * 16 + component))) continue;
         nunfill++;
-        if (nbad < sizeof bad - 24) nbad += (size_t)snprintf(bad + nbad, sizeof bad - nbad, dyn ? " c%d+dynamic" : " c%d+%#lx", bank, idx * 16);
+        if (nbad < sizeof bad - 24) nbad += (size_t)snprintf(bad + nbad, sizeof bad - nbad, dyn ? " c%d+dynamic" : " c%d+%#lx", bank, idx * 16 + component);
     }
     if (nbad) MLOG("【红】着色器 %s（阶段 %d）读驱动段的这些位置回放层不填，读到 0：%s", o->key, o->stage, bad);
     return nunfill;
@@ -5148,14 +5154,20 @@ static id<MTLTexture> tex_by_id(int tid) {   // 调用方持 g_rmu | Caller hold
     if (!base) return nil;
     v = base;
     MTLTextureSwizzleChannels vsw = MTLTextureSwizzleChannelsDefault;
-    int need_swz = tex_swizzle_sel(&r.t, r.has_v && r.v.set_swizzle ? r.v.swz : NULL, r.has_v && r.v.set_format ? r.v.format : r.t.d.format, &vsw) || !swizzle_eq(base.swizzle, MTLTextureSwizzleChannelsDefault);
-    if (need_swz || (r.has_v && (r.v.set_format || r.v.set_levels || r.v.set_layers || r.v.set_target))) {
+    int stencil_view = r.has_v && r.v.set_ds_mode ? r.v.stencil_mode : r.t.d.stencil_mode;
+    if (stencil_view && base.pixelFormat != MTLPixelFormatDepth32Float_Stencil8) {
+        RED_ONCE(122, "stencil view requires a combined depth/stencil texture (id %d format %lu)",tid,(unsigned long)base.pixelFormat);
+        return nil;
+    }
+    int need_swz = !stencil_view && (tex_swizzle_sel(&r.t, r.has_v && r.v.set_swizzle ? r.v.swz : NULL, r.has_v && r.v.set_format ? r.v.format : r.t.d.format, &vsw) || !swizzle_eq(base.swizzle, MTLTextureSwizzleChannelsDefault));
+    if (stencil_view || need_swz || (r.has_v && (r.v.set_format || r.v.set_levels || r.v.set_layers || r.v.set_target))) {
         uint32_t pf = (uint32_t)base.pixelFormat; uint8_t swz[4];
         if (r.v.set_format && !(nvn_fmt_to_mtl(r.v.format, &pf, swz) && pf)) pf = (uint32_t)base.pixelFormat;
+        if (stencil_view) pf = MTLPixelFormatX32_Stencil8;
         { uint32_t upf; int ubpp; if (r.v.set_format && bc1_fmt(r.v.format) && pf_astc4(base.pixelFormat)) pf = (uint32_t)bc1_astc_pf(r.v.format);   // TOTK: BC1 view of a transcoded (ASTC) texture
           else if (r.v.set_format && tc_pf(r.v.format) != MTLPixelFormatInvalid && tc_pf(r.t.d.format) == base.pixelFormat) pf = (uint32_t)tc_pf(r.v.format);   // TOTK: view of a BC2/3/4/5/7 texture stored transcoded (tex_tc)
           else if (r.v.set_format && bc_unpack(r.v.format, &upf, &ubpp)) pf = upf; }   // 无 BC：BC 视图跟底图一样换成解压后的格式 | No BC: a BC view is switched to the decompressed format just like the base texture
-        if (r.v.set_format && tex_need_pfv(base.pixelFormat, (MTLPixelFormat)pf) && !(base.usage & MTLTextureUsagePixelFormatView)) {
+        if ((r.v.set_format || stencil_view) && tex_need_pfv(base.pixelFormat, (MTLPixelFormat)pf) && !(base.usage & MTLTextureUsagePixelFormatView)) {
             base = tex_upgrade_pfv(&rp->t, base, (MTLPixelFormat)pf);
             if (g_tex_prepare_split) return nil;
             sg = g_ser_gen;
@@ -5192,11 +5204,40 @@ static id<MTLTexture> tex_by_id(int tid) {   // 调用方持 g_rmu | Caller hold
 }
 // 热路径取对象：表里有效就直接返回表持有的指针（不经 ARC 的 retain / autorelease），否则走慢路建 / 校验。调用方持 g_rmu。
 // Hot-path object fetch: if the table entry is valid, return the table-held pointer directly (without ARC retain / autorelease), otherwise take the slow path to build / validate. Caller holds g_rmu.
+#ifdef CASTLEVANIA_NATIVE_PROBE
+/* Castlevania draws its camera image into serial N, then binds adjacent
+   serial N+1 in the first fullscreen postprocess copy. That texture still
+   contains the clear color in this host. Feed the camera image to this exact
+   shader/pass; CASTLEVANIA_SCENE_FEED=0 is the A/B negative control. */
+static tex_t g_cv_scene_tex;
+static uint64_t g_cv_scene_frame = UINT64_MAX;
+static int g_cv_copy_shader;
+static int cv_scene_feed_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("CASTLEVANIA_SCENE_FEED"); on = !e || strcmp(e, "0"); } return on; }
+static id<MTLTexture> cv_scene_feed(int tid) {
+    if (!cv_scene_feed_on() || g_cv_scene_frame != atomic_load(&g_cur_frame) || tid <= 0 || tid >= g_ntreg
+        || !g_treg[tid].ok || g_treg[tid].t.serial != g_cv_scene_tex.serial + 1 || !R.has_rt
+        || !R.rt.n || !R.rt.color[0] || R.rt.color[0]->serial == g_cv_scene_tex.serial
+        || R.rt.color[0]->d.width != g_cv_scene_tex.d.width || R.rt.color[0]->d.height != g_cv_scene_tex.d.height
+        || !g_cv_copy_shader) return nil;
+    static uint64_t n;
+    if (++n <= 8 || n % 10000 == 0) MLOG("[castlevania] scene feed %llu frame=%llu source=%llu bound=%llu target=%llu",
+        (unsigned long long)n, (unsigned long long)g_cv_scene_frame,
+        (unsigned long long)g_cv_scene_tex.serial, (unsigned long long)g_treg[tid].t.serial,
+        (unsigned long long)R.rt.color[0]->serial);
+    return tex_mtl(&g_cv_scene_tex);
+}
+#endif
 static inline __attribute__((always_inline)) void *tex_fast(int tid) {
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    id<MTLTexture> cv = cv_scene_feed(tid); if (cv) return (__bridge void *)cv;
+#endif
     if (tid > 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && (!g_treg[tid].view_pkg || g_treg[tid].view_dirty == treg_stamp(g_treg[tid].view_pkg))) return g_treg[tid].view;
     return (__bridge void *)tex_by_id(tid);
 }
 static inline __attribute__((always_inline)) uint64_t tex_fast_rid(int tid, void **out) {
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    id<MTLTexture> cv = cv_scene_feed(tid); if (cv) { if (out) *out = (__bridge void *)cv; return cv.gpuResourceID._impl; }
+#endif
     if (tid > 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && (!g_treg[tid].view_pkg || g_treg[tid].view_dirty == treg_stamp(g_treg[tid].view_pkg))) { if (out) *out = g_treg[tid].view; return g_treg[tid].view_rid; }
     id<MTLTexture> t = tex_by_id(tid); if (out) *out = (__bridge void *)t; return t ? t.gpuResourceID._impl : 0;
 }
@@ -7024,7 +7065,20 @@ static int first_draw_covers(int i, id<MTLTexture> t, NSUInteger level) {
 static int state_op(uint32_t op, const void *a) {
     switch (op) {
         case OP_SCISSOR: R.sc = *(const p_scissor *)a; R.has_sc = 1; break;
-        case OP_BIND_PROGRAM: { const prog_t *np = ((const p_bind_program *)a)->prog; if (np != S.prog) { S.prog = np; g_pso_dirty = 1; args_program_changed(); } break; }
+        case OP_BIND_PROGRAM: {
+            const p_bind_program *b = a;
+            const prog_t *np = b->prog;
+#ifdef CASTLEVANIA_NATIVE_PROBE
+            /* The game binds VS+FS with mask 0x3, then clears the unrelated
+               tessellation/geometry/compute stages with a null 0x3c bind.
+               That second bind must leave the graphics program intact. */
+            static int cv_masked_bind = -1;
+            if (cv_masked_bind < 0) { const char *e = getenv("CASTLEVANIA_MASKED_BIND"); cv_masked_bind = !e || strcmp(e, "0"); }
+            if (cv_masked_bind && !np && !(b->stages & 0x3)) break;
+#endif
+            if (np != S.prog) { S.prog = np; g_pso_dirty = 1; args_program_changed(); }
+            break;
+        }
         case OP_BIND_STATE: {
             const p_bind_state *b = a; void *dst = NULL; size_t n = 0;
             blend_st bs;
@@ -9022,8 +9076,28 @@ static int mfxup_draw(NvProg *pr) {
 }
 #include "nvn_cube_group.h"
 static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
-    if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); g_draw_skip[0]++; return; }
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    g_cv_copy_shader = 0;
+#endif
+    if (!S.prog) {
+#ifdef CASTLEVANIA_NATIVE_PROBE
+        if (getenv("CASTLEVANIA_NO_PROGRAM_TRACE")) {
+            static uint64_t n;
+            if (++n <= 32 || n % 10000 == 0)
+                MLOG("[castlevania] no-program draw %llu frame=%llu pass=%llu target=%llu count=%u indexed=%d",
+                     (unsigned long long)n, (unsigned long long)atomic_load(&g_cur_frame),
+                     (unsigned long long)g_stat_pass,
+                     (unsigned long long)(R.rt.n && R.rt.color[0] ? R.rt.color[0]->serial : 0),
+                     di ? di->count : dw ? dw->count : 0, di != NULL);
+        }
+#endif
+        RED_ONCE(18, "绘制前没有绑定程序"); g_draw_skip[0]++; return;
+    }
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    __unsafe_unretained NvShader *cv_fs = pr ? pr->sh[1] : nil;
+    g_cv_copy_shader = cv_fs && !strncmp(cv_fs->key, "48bbc5271bc82e0c10a4059ac6019c62abb1060e2e55af69da7679a3bce5d8eb", 64);
+#endif
     if (pr && pr->missing) { g_draw_skip[15]++; return; }   // TOTK (iOS): a stage is not translated yet
     if (g_nupd) upd_guard_draw(pr, di);   // TOTK: before any encoder or texture preparation of this draw
     { int fit = pr ? prog_fit(pr) : 0; if (fit < 0) { g_draw_skip[15]++; return; } if (fit) g_pso_dirty = 1; }
@@ -10136,6 +10210,16 @@ void mtl_exec(const uint8_t *p) {
                 PD("Y update_ub cmd=%p src=%#llx dst=%#llx bytes=%llu", p, (unsigned long long)((const uint8_t *)a + 16), (unsigned long long)d, (unsigned long long)n); mtl_sub_update((const uint8_t *)a + 16, d, n); break; }
             case OP_SET_RT: {
                 const p_set_rt *r = a;
+#ifdef CASTLEVANIA_NATIVE_PROBE
+                g_cv_copy_shader = 0;
+                if (cv_scene_feed_on() && r->n && r->color[0]
+                    && r->color[0]->d.format == 0x38 && r->color[0]->d.width >= 640
+                    && r->color[0]->d.width < 1920 && r->color[0]->d.height >= 360
+                    && abs((int)r->color[0]->d.width * 9 - (int)r->color[0]->d.height * 16) <= 16) {
+                    uint64_t f = atomic_load(&g_cur_frame);
+                    if (g_cv_scene_frame != f) { g_cv_scene_tex = *r->color[0]; g_cv_scene_frame = f; }
+                }
+#endif
                 g_cg.rt_seq++; if (g_cg_pending && !cg_rt_match(r)) { g_cg.reason[0]++; cg_flush(); }   // TOTK: a target that is not a cube face set lands the pending groups
                 if (defer_begin_q(p)) break;
                 int pend = R.clear_d || R.clear_s; for (int i = 0; i < 8; i++) pend |= R.clear_c[i];

@@ -11,12 +11,78 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
+#ifdef CASTLEVANIA_NATIVE_PROBE
+typedef struct { uint64_t handle; int64_t position; } CastlevaniaStream;
+static int castlevania_stream_read(void *opaque,char *buffer,int size) {
+    CastlevaniaStream *s=opaque;uint64_t got=0;
+    if(size<0||runtime_romfs_read(&got,s->handle,s->position,buffer,(uint64_t)size))return -1;
+    s->position+=(int64_t)got;return (int)got;
+}
+static fpos_t castlevania_stream_seek(void *opaque,fpos_t offset,int whence) {
+    CastlevaniaStream *s=opaque;int64_t size=0;
+    if(runtime_romfs_size(&size,s->handle))return -1;
+    int64_t base=whence==SEEK_SET?0:whence==SEEK_CUR?s->position:whence==SEEK_END?size:-1;
+    int64_t next=0;if(base<0||__builtin_add_overflow(base,(int64_t)offset,&next)||next<0)return -1;
+    s->position=next;return (fpos_t)next;
+}
+static int castlevania_stream_close(void *opaque) {
+    CastlevaniaStream *s=opaque;runtime_romfs_close(s->handle);free(s);return 0;
+}
+static FILE *castlevania_fopen(const char *path,const char *mode) {
+    if(getenv("CASTLEVANIA_HLE_TRACE"))fprintf(stderr,"[castlevania] fopen %s mode=%s\n",path?path:"(null)",mode?mode:"(null)");
+    if(!runtime_romfs_owns(path))return fopen(path,mode);
+    if(!mode||mode[0]!='r'){errno=EACCES;return NULL;}
+    uint64_t handle=0;unsigned result=runtime_romfs_open(&handle,path,1);
+    fprintf(stderr,"[castlevania] stdio RomFS fopen %s result=%#x\n",path,result);
+    if(result){errno=ENOENT;return NULL;}
+    CastlevaniaStream *s=calloc(1,sizeof *s);if(!s){runtime_romfs_close(handle);return NULL;}s->handle=handle;
+    FILE *f=funopen(s,castlevania_stream_read,NULL,castlevania_stream_seek,castlevania_stream_close);
+    if(!f){runtime_romfs_close(handle);free(s);}return f;
+}
+static int castlevania_open(const char *path,int flags,int mode) {
+    int (*original)(const char *,int,int)=runtime_symbol("open");
+    if(!original)runtime_fail("SDK open missing");
+    int result=original(path,flags,mode);
+    if(getenv("CASTLEVANIA_HLE_TRACE"))fprintf(stderr,"[castlevania] open %s flags=%#x result=%d\n",path?path:"(null)",flags,result);
+    return result;
+}
+static int castlevania_stat(const char *path,void *info) {
+    int (*original)(const char *,void *)=runtime_symbol("stat");
+    if(!original)runtime_fail("SDK stat missing");
+    if(info&&runtime_romfs_owns(path)){
+        int type=-1;
+        if(!runtime_romfs_entry_type(&type,path)){
+            /* The SDK's stat opens a descriptor first. Its file device does not
+               open the mounted RomFS root, although nn::fs can query it. Match
+               the SDK's 0x70-byte AArch64 stat layout (mode +0x10, size +0x30). */
+            memset(info,0,0x70);
+            uint32_t mode=(type?S_IFREG:S_IFDIR)|0444,nlink=1;
+            memcpy((uint8_t *)info+0x10,&mode,sizeof mode);
+            memcpy((uint8_t *)info+0x14,&nlink,sizeof nlink);
+            if(type){
+                uint64_t h=0;int64_t size=0;
+                if(!runtime_romfs_open(&h,path,1)){
+                    runtime_romfs_size(&size,h);runtime_romfs_close(h);
+                    memcpy((uint8_t *)info+0x30,&size,sizeof size);
+                }
+            }
+            if(getenv("CASTLEVANIA_HLE_TRACE"))fprintf(stderr,"[castlevania] stat %s result=0 type=%d\n",path,type);
+            return 0;
+        }
+    }
+    int result=original(path,info);
+    if(getenv("CASTLEVANIA_HLE_TRACE"))fprintf(stderr,"[castlevania] stat %s result=%d\n",path?path:"(null)",result);
+    return result;
+}
+#endif
 
 #define R_PATH_NOT_FOUND 0x202u
 #define R_ALREADY_EXISTS 0x402u
@@ -26,8 +92,12 @@
 #define R_INVALID_PATH 0x2ee602u
 #define R_OPEN_MODE 0x307402u
 #define R_APPEND_REQUIRED 0x2f5e02u
-#define TOTK_APPLICATION_ID 0x0100f2c0115b6000ULL
-enum { M_FREE, M_SAVE, M_TEMP, M_CACHE };
+#ifdef CASTLEVANIA_NATIVE_PROBE
+#define GAME_APPLICATION_ID 0x0100BA4026E94000ULL
+#else
+#define GAME_APPLICATION_ID 0x0100f2c0115b6000ULL
+#endif
+enum { M_FREE, M_SAVE, M_TEMP, M_CACHE, M_ADDON };
 enum { OPEN_READ = 1, OPEN_WRITE = 2, OPEN_APPEND = 4 };
 #define FILE_BASE 0x200000000ULL
 #define DIR_BASE 0x300000000ULL
@@ -118,10 +188,58 @@ static unsigned host_path(const char *path, char *out, size_t cap) { return host
 /* A change to save data through a path (create, delete, rename, directories): marks the save as in progress. */
 static unsigned save_change_path(const char *path, char *out, size_t cap) {
     int kind = M_FREE; unsigned r = host_path_kind(path, out, cap, &kind);
+    if (!r && kind == M_ADDON) return R_OPEN_MODE;
     if (!r && kind == M_SAVE) save_touched();
     return r;
 }
 static unsigned errno_result(void) { return errno == ENOENT || errno == ENOTDIR ? R_PATH_NOT_FOUND : errno == EEXIST ? R_ALREADY_EXISTS : errno == ENOTEMPTY ? R_NOT_EMPTY : R_INVALID_ARGUMENT; }
+
+/* AOC indexes are the title-id suffixes 1 and 2. The packager verifies the
+   original PublicData images before extracting their sole file into these
+   read-only directories. A missing directory is never advertised to a game. */
+static unsigned addon_path(int index, char *path, size_t cap) {
+    const char *root = getenv("TOTK_AOC_ROOT");
+    if (!root || !*root || (index != 1 && index != 2)) return R_TARGET_NOT_FOUND;
+    int n = snprintf(path, cap, "%s/0100BA4026E9500%d/files", root, index);
+    if (n < 0 || (size_t)n >= cap) return R_INVALID_PATH;
+    return 0;
+}
+int runtime_fs_addon_available(int index) {
+    char path[1100], file[1200]; struct stat st;
+    if (addon_path(index, path, sizeof path)) return 0;
+    if (stat(path, &st) || !S_ISDIR(st.st_mode)) return 0;
+    if (snprintf(file, sizeof file, "%s/VENOM", path) >= (int)sizeof file) return 0;
+    return !stat(file, &st) && S_ISREG(st.st_mode) && st.st_size == 322;
+}
+static unsigned mount_addon(const char *name, int index, void *cache, size_t cache_size) {
+    (void)cache; (void)cache_size;
+    fprintf(stderr, "[castlevania] MountAddOnContent %s index=%d\n", name ? name : "(null)", index);
+    char path[1100]; unsigned r = addon_path(index, path, sizeof path);
+    if (r || !runtime_fs_addon_available(index)) return R_TARGET_NOT_FOUND;
+    return mount_add(name, M_ADDON, path);
+}
+#ifdef CASTLEVANIA_NATIVE_PROBE
+static unsigned storage_space(int64_t *out, const char *path, int total) {
+    if (!out || !path) return R_INVALID_ARGUMENT;
+    if (runtime_romfs_owns(path)) { *out = 0; return 0; }
+    char mounted[64];
+    if (!strchr(path, ':')) {
+        if (snprintf(mounted, sizeof mounted, "%s:/", path) >= (int)sizeof mounted) return R_INVALID_PATH;
+        path = mounted;
+    }
+    char host[1100]; int kind = M_FREE;
+    unsigned r = host_path_kind(path, host, sizeof host, &kind);
+    fprintf(stderr, "[castlevania] %s %s mount=%d result=%#x\n", total ? "GetTotalSpaceSize" : "GetFreeSpaceSize", path, kind, r);
+    if (r) return r;
+    if (kind == M_ADDON) { *out = 0; return 0; }
+    struct statvfs st;
+    if (statvfs(host, &st)) return errno_result();
+    *out = (int64_t)(total ? st.f_blocks : st.f_bavail) * (int64_t)st.f_frsize;
+    return 0;
+}
+static unsigned free_space(int64_t *out, const char *path) { return storage_space(out, path, 0); }
+static unsigned total_space(int64_t *out, const char *path) { return storage_space(out, path, 1); }
+#endif
 
 /* ---------- storage mounts ---------- */
 static unsigned mount_save(const char *name, const uint64_t *uid) {
@@ -131,7 +249,11 @@ static unsigned mount_save(const char *name, const uint64_t *uid) {
 }
 static unsigned char save_exists(uint64_t application, const uint64_t *uid) {
     ready(); uint64_t me[2]; runtime_account_uid(me);
-    return application == TOTK_APPLICATION_ID && uid && uid[0] == me[0] && uid[1] == me[1];
+    unsigned char exists = application == GAME_APPLICATION_ID && uid && uid[0] == me[0] && uid[1] == me[1];
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    if (getenv("CASTLEVANIA_HLE_TRACE")) fprintf(stderr, "[castlevania] IsSaveDataExisting title=%016llx result=%u\n", (unsigned long long)application, exists);
+#endif
+    return exists;
 }
 /* Other titles' save data (e.g. data-link bonuses) is not present on this host. */
 static unsigned mount_save_ro(const char *name, uint64_t application, const uint64_t *uid) {
@@ -192,11 +314,15 @@ static File *file_of(uint64_t h, int *fd, int *mode) {
 }
 void runtime_fs_log(const char *what, const char *path);
 static unsigned open_file(uint64_t *out, const char *path, int mode) {
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    if(getenv("CASTLEVANIA_HLE_TRACE"))fprintf(stderr,"[castlevania] nn::fs::OpenFile %s mode=%d\n",path?path:"(null)",mode);
+#endif
     if (path && !runtime_romfs_owns(path)) runtime_fs_log(mode & 2 ? "write" : "read", path);
     if (runtime_romfs_owns(path)) return runtime_romfs_open(out, path, mode);
     if (!out || !(mode & (OPEN_READ | OPEN_WRITE)) || (mode & ~7)) return R_INVALID_ARGUMENT;
     char p[1100]; int kind = M_FREE; unsigned r = host_path_kind(path, p, sizeof p, &kind); if (r) return r;
     struct stat st; if (stat(p, &st)) return R_PATH_NOT_FOUND; if (!S_ISREG(st.st_mode)) return R_PATH_NOT_FOUND;
+    if (kind == M_ADDON && (mode & OPEN_WRITE)) return R_OPEN_MODE;
     int save_writer = kind == M_SAVE && (mode & OPEN_WRITE);
     int fd = open(p, (mode & OPEN_WRITE ? (mode & OPEN_READ ? O_RDWR : O_WRONLY) : O_RDONLY) | O_NOFOLLOW);
     if (fd < 0) return errno_result();
@@ -266,10 +392,25 @@ static unsigned rename_file(const char *from, const char *to) {
     return rename(a, b) ? errno_result() : 0;
 }
 static unsigned entry_type(int *out, const char *path) {
-    if (runtime_romfs_owns(path)) return runtime_romfs_entry_type(out, path);
+    if (runtime_romfs_owns(path)) {
+        unsigned result=runtime_romfs_entry_type(out,path);
+#ifdef CASTLEVANIA_NATIVE_PROBE
+        if(getenv("CASTLEVANIA_HLE_TRACE"))fprintf(stderr,"[castlevania] nn::fs::GetEntryType %s result=%#x type=%d\n",path?path:"(null)",result,result?-1:*out);
+#endif
+        return result;
+    }
     char p[1100]; unsigned r = host_path(path, p, sizeof p); if (r) return r; struct stat st;
     if (!out) return R_INVALID_ARGUMENT; if (stat(p, &st)) return R_PATH_NOT_FOUND;
     *out = S_ISDIR(st.st_mode) ? 0 : 1; return 0;
+}
+static bool is_mounted(const char *name) {
+    if(runtime_romfs_mounted(name))return true;
+    if(!name)return false;
+    pthread_mutex_lock(&lock);
+    bool found=false;
+    for(int i=0;i<16;i++)if(mounts[i].kind&&!strcmp(mounts[i].name,name)){found=true;break;}
+    pthread_mutex_unlock(&lock);
+    return found;
 }
 
 /* ---------- directories ---------- */
@@ -278,7 +419,13 @@ _Static_assert(sizeof(DirectoryEntry) == 0x310, "nn::fs::DirectoryEntry");
 static unsigned create_directory(const char *path) { char p[1100]; unsigned r = save_change_path(path, p, sizeof p); if (r) return r; return mkdir(p, 0700) ? errno_result() : 0; }
 static unsigned delete_recursive(const char *path) { char p[1100]; unsigned r = save_change_path(path, p, sizeof p); if (r) return r; struct stat st; if (stat(p, &st)) return R_PATH_NOT_FOUND; return remove_tree(p) ? R_INVALID_ARGUMENT : 0; }
 static unsigned open_directory(uint64_t *out, const char *path, int mode) {
-    if (runtime_romfs_owns(path)) { fprintf(stderr, "[totk] OpenDirectory on RomFS %s\n", path); runtime_fail("RomFS directory listing not implemented"); }
+    if (runtime_romfs_owns(path)) {
+        unsigned result=runtime_romfs_open_dir(out,path,mode);
+#ifdef CASTLEVANIA_NATIVE_PROBE
+        if(getenv("CASTLEVANIA_HLE_TRACE"))fprintf(stderr,"[castlevania] nn::fs::OpenDirectory %s mode=%d result=%#x\n",path?path:"(null)",mode,result);
+#endif
+        return result;
+    }
     char p[1100]; unsigned r = host_path(path, p, sizeof p); if (r) return r; if (!out || mode < 1 || mode > 3) return R_INVALID_ARGUMENT;
     DIR *d = opendir(p); if (!d) return errno_result();
     pthread_mutex_lock(&lock);
@@ -286,6 +433,7 @@ static unsigned open_directory(uint64_t *out, const char *path, int mode) {
     pthread_mutex_unlock(&lock); runtime_fail("host directory handle table full");
 }
 static unsigned read_directory(int64_t *count, DirectoryEntry *out, uint64_t h, int64_t max) {
+    if (runtime_romfs_dir_handle(h)) return runtime_romfs_read_dir(count, out, h, max);
     if (h < DIR_BASE || h >= DIR_BASE + NDIRS || !count || max < 0 || (!out && max)) return R_INVALID_ARGUMENT;
     Dir *d = &dirs[h - DIR_BASE]; if (!d->dir) return R_INVALID_ARGUMENT;
     int64_t n = 0; struct dirent *e;
@@ -298,6 +446,7 @@ static unsigned read_directory(int64_t *count, DirectoryEntry *out, uint64_t h, 
     *count = n; return 0;
 }
 static void close_directory(uint64_t h) {
+    if (runtime_romfs_dir_handle(h)) { runtime_romfs_close_dir(h); return; }
     if (h < DIR_BASE || h >= DIR_BASE + NDIRS || !dirs[h - DIR_BASE].dir) runtime_fail("close invalid directory handle");
     pthread_mutex_lock(&lock); closedir(dirs[h - DIR_BASE].dir); dirs[h - DIR_BASE].dir = NULL; pthread_mutex_unlock(&lock);
 }
@@ -337,9 +486,18 @@ void runtime_save_probe(void) {
 }
 
 void *runtime_fs_host_override(const char *name) {
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    static const struct {const char *name;void *fn;} castlevania_stdio[]={
+        {"fopen",castlevania_fopen},{"fread",fread},{"fclose",fclose},
+        {"fseek",fseek},{"ftell",ftell},{"fgets",fgets},{"feof",feof},
+        {"open",castlevania_open},{"stat",castlevania_stat}};
+    for(size_t i=0;i<sizeof castlevania_stdio/sizeof *castlevania_stdio;i++)
+        if(!strcmp(name,castlevania_stdio[i].name))return castlevania_stdio[i].fn;
+#endif
     static const struct { const char *name; void *fn; } map[] = {
         {"_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", open_file}, {"_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE", file_size},
         {"_ZN2nn2fs9CloseFileENS0_10FileHandleE", close_file}, {"_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc", entry_type},
+        {"_ZN2nn2fs9IsMountedEPKc", is_mounted},
         {"_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm", read_file}, {"_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvmRKNS0_10ReadOptionE", read_options},
         {"_ZN2nn2fs8ReadFileENS0_10FileHandleElPvm", read_exact},
         {"_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE", write_file},
@@ -350,6 +508,11 @@ void *runtime_fs_host_override(const char *name) {
         {"_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl", read_directory},
         {"_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE", close_directory},
         {"_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE", mount_save},
+        {"_ZN2nn2fs17MountAddOnContentEPKciPvm", mount_addon},
+#ifdef CASTLEVANIA_NATIVE_PROBE
+        {"_ZN2nn2fs16GetFreeSpaceSizeEPlPKc", free_space},
+        {"_ZN2nn2fs17GetTotalSpaceSizeEPlPKc", total_space},
+#endif
         {"_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE", mount_save_ro},
         {"_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE", save_exists},
         {"_ZN2nn2fs21MountTemporaryStorageEPKc", mount_temp}, {"_ZN2nn2fs7UnmountEPKc", unmount}, {"_ZN2nn2fs6CommitEPKc", commit},

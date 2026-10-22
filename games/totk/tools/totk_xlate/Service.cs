@@ -231,14 +231,18 @@ static class ShaderService
         var dr = new JsonObject();
         foreach (int bank in new[] { 0, 2 })
         {
-            var offs = new SortedSet<long>(); bool dyn = false;
-            foreach (Match m in Regex.Matches(src, StagePrefix[stage] + "_c" + bank.ToString(CultureInfo.InvariantCulture) + @"\)\._m0\[([^\]]+)\]"))
+            var offs = new SortedSet<long>(); var words = new SortedSet<long>(); bool dyn = false;
+            foreach (Match m in Regex.Matches(src, StagePrefix[stage] + "_c" + bank.ToString(CultureInfo.InvariantCulture) + @"\)\._m0\[([^\]]+)\](?:\.([xyzw]{1,4}))?"))
             {
                 string idx = m.Groups[1].Value.TrimEnd('u');
-                if (idx.Length > 0 && idx.All(c => c >= '0' && c <= '9')) offs.Add(ParseInt(idx) * 16); else dyn = true;
+                if (idx.Length > 0 && idx.All(c => c >= '0' && c <= '9')) {
+                    long off = ParseInt(idx) * 16; offs.Add(off);
+                    string components = m.Groups[2].Success ? m.Groups[2].Value : "xyzw";
+                    foreach (char component in components) words.Add(off + 4 * "xyzw".IndexOf(component));
+                } else dyn = true;
             }
             if (offs.Count > 0 || dyn)
-                dr[bank.ToString(CultureInfo.InvariantCulture)] = new JsonObject { ["vec4_offsets"] = new JsonArray(offs.Select(o => (JsonNode)o).ToArray()), ["dynamic"] = dyn };
+                dr[bank.ToString(CultureInfo.InvariantCulture)] = new JsonObject { ["vec4_offsets"] = new JsonArray(offs.Select(o => (JsonNode)o).ToArray()), ["word_offsets"] = new JsonArray(words.Select(o => (JsonNode)o).ToArray()), ["dynamic"] = dyn };
         }
         return dr;
     }
@@ -252,7 +256,7 @@ static class ShaderService
             if ((bool)d["dynamic"]) bad.Add((JsonNode)$"c{kv.Key} dynamic index");
             long bank = ParseInt(kv.Key);
             var ranges = bank == 2 ? DrvFillC2 : bank == 0 ? DrvFillC0[stage] : Array.Empty<(long lo, long hi)>();
-            foreach (JsonNode o in d["vec4_offsets"].AsArray())
+            foreach (JsonNode o in d["word_offsets"].AsArray())
             {
                 long ov = Long(o);
                 if (!ranges.Any(r => r.lo <= ov && ov < r.hi)) bad.Add((JsonNode)$"c{kv.Key}+0x{ov.ToString("x", CultureInfo.InvariantCulture)}");

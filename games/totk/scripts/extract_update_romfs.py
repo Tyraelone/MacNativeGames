@@ -28,7 +28,8 @@ def copy_range(source, offset, size, target):
             size -= len(data)
 
 
-def merge(base, update, keys_path, hactool, output, *, base_romfs=None):
+def merge(base, update, keys_path, hactool, output, *, base_romfs=None,
+          title_id='0100F2C0115B6000'):
     require(not output.exists(), 'Output exists')
     keys = load_keys(keys_path)
     inputs = []
@@ -42,7 +43,9 @@ def merge(base, update, keys_path, hactool, output, *, base_romfs=None):
             for rights, key in found.items():
                 require(rights not in tickets or tickets[rights] == key, 'Conflicting common tickets')
                 tickets[rights] = key
-            record, header = program_nca(nca_inventory(f, entries, keys), update=is_update)
+            record, header = program_nca(nca_inventory(f, entries, keys), update=is_update,
+                                         title_id=title_id,
+                                         allow_combined=kind == 'xci' and not is_update)
             rights = header[0x230:0x240]
             require(rights == bytes(16) or rights in tickets, 'Missing common ticket')
             inputs.append((source, record, header))
@@ -98,7 +101,10 @@ if __name__ == '__main__':
     parser.add_argument('update', type=Path)
     parser.add_argument('--keys', required=True, type=Path)
     parser.add_argument('--hactool', required=True, type=Path)
+    parser.add_argument('--title-id', default='0100F2C0115B6000', type=lambda value: value.upper(),
+                        help='base title ID, for selecting a game from a combined XCI')
     parser.add_argument('--base-romfs', type=Path, help='full decrypted base IVFC section, including hash levels (not a raw RomFS image)')
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
-    merge(args.base, args.update, args.keys, args.hactool, args.output, base_romfs=args.base_romfs)
+    merge(args.base, args.update, args.keys, args.hactool, args.output,
+          base_romfs=args.base_romfs, title_id=args.title_id)

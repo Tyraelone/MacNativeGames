@@ -157,7 +157,7 @@ def nca_inventory(f, entries, keys):
     return records
 
 
-def program_nca(records, update=False, title_id='0100F2C0115B6000'):
+def program_nca(records, update=False, title_id='0100F2C0115B6000', allow_combined=False):
     require(len(title_id) == 16 and all(c in '0123456789ABCDEF' for c in title_id),
             'Expected a 16-digit uppercase title ID')
     if update:
@@ -171,9 +171,13 @@ def program_nca(records, update=False, title_id='0100F2C0115B6000'):
         return record, hdr
     # Update Program NCAs can retain the base title ID; their Meta NCA carries the update ID.
     metadata = [r for r, _ in records if r['content_type'] == 1]
+    if allow_combined:
+        metadata = [r for r in metadata if r['title_id'] == title_id]
     require(len(metadata) <= 1 and all(r['title_id'] == title_id for r in metadata),
             'Expected base game metadata; updates, DLC and combined packages are unsupported')
     programs = [(r, h) for r, h in records if r['content_type'] == 0]
+    if allow_combined:
+        programs = [(r, h) for r, h in programs if r['title_id'] == title_id]
     require(len(programs) == 1, 'Expected one base Program NCA; updates, DLC and combined packages are unsupported')
     record, hdr = programs[0]
     require(record['title_id'] == title_id,
@@ -202,7 +206,8 @@ def main():
         kind, entries = container_entries(f, args.game.stat().st_size)
         tickets = common_tickets(f, entries)
         records = nca_inventory(f, entries, keys)
-        record, hdr = program_nca(records, update=args.update, title_id=args.title_id)
+        record, hdr = program_nca(records, update=args.update, title_id=args.title_id,
+                                  allow_combined=kind == 'xci' and not args.update)
         ctr_key = nca_ctr_key(hdr, keys, tickets)
         for i in range(4):
             start, end = struct.unpack_from('<II', hdr, 0x240 + 16 * i)

@@ -41,6 +41,12 @@ static char mount_name[32];
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t read_calls,read_bytes,read_ns,read_prepare_ns,read_report_ns;
 static uint64_t handles[NH]; /* file index + 1; 0 is free */
+#define ROM_DIR_BASE 0x400000000ULL
+#define ROM_DIR_COUNT 256
+typedef struct { int used,mode; uint64_t cursor; char prefix[4096],last[769]; } RomDir;
+static RomDir rom_dirs[ROM_DIR_COUNT];
+typedef struct { char name[769]; uint8_t pad0[3]; int8_t type; uint8_t pad1[3]; int64_t size; } RomDirEntry;
+_Static_assert(sizeof(RomDirEntry)==0x310,"RomFS directory entry layout");
 /* Overlay (scripts/make_romfs_patches.py): files listed in <TOTK_ROMFS_PATCHES, default extracted/v0/romfs-patches>/manifest.tsv
    are served in place of the originals. Each line names a RomFS path, the overlay's size and SHA-256 and the original's
    SHA-256; a missing path, a size or hash mismatch or a changed original stops the start (regenerate the overlay).
@@ -207,7 +213,11 @@ unsigned runtime_romfs_open(uint64_t *out,const char *path,int mode) {
  fs_log("rom",path?path:"(null)");
  if(!out||mode!=1)return UNSUPPORTED;const char *p=rom_path(path);if(!p)return NOT_FOUND;uint64_t i=lower(p);if(i>=file_count||strcmp(p,entry_name(entry(i))))return NOT_FOUND;
  uint8_t ov=0;for(unsigned k=0;k<noverlay;k++)if(overlays[k].index==i)ov=(uint8_t)(k+1);
- pthread_mutex_lock(&lock);for(unsigned j=1;j<NH;j++)if(!handles[j]){handles[j]=i+1;handle_ovl[j]=ov;*out=0x100000000ULL+j;pthread_mutex_unlock(&lock);return 0;}pthread_mutex_unlock(&lock);runtime_fail("file handle table full");return INVALID;
+ pthread_mutex_lock(&lock);for(unsigned j=1;j<NH;j++)if(!handles[j]){handles[j]=i+1;handle_ovl[j]=ov;*out=0x100000000ULL+j;pthread_mutex_unlock(&lock);
+#ifdef CASTLEVANIA_NATIVE_PROBE
+  if(getenv("CASTLEVANIA_HLE_TRACE")&&strstr(path,"global-metadata.dat"))fprintf(stderr,"[castlevania] metadata handle=%#llx size=%llu\n",(unsigned long long)*out,(unsigned long long)entry(i).size);
+#endif
+  return 0;}pthread_mutex_unlock(&lock);runtime_fail("file handle table full");return INVALID;
 }
 static int handle_entry(uint64_t h,Entry *e) {if(h<=0x100000000ULL||h>=0x100000000ULL+NH)return 0;pthread_mutex_lock(&lock);uint64_t i=handles[h-0x100000000ULL];pthread_mutex_unlock(&lock);if(!i)return 0;*e=entry(i-1);return 1;}
 /* Where an open handle's bytes come from: the overlay file, or the original's range of the image. */
@@ -223,6 +233,9 @@ unsigned runtime_romfs_read(uint64_t *out,uint64_t h,int64_t offset,void *buffer
  uint64_t t0=profile?runtime_now_ns():0;
  if(fd==image_fd&&image_map){memcpy(buffer,image_map+base+(uint64_t)offset,(size_t)n);done=n;}
  else while(done<n){size_t chunk=(size_t)(n-done);if(chunk>8<<20)chunk=8<<20;ssize_t r=src_pread(fd,(uint8_t *)buffer+done,chunk,(off_t)(base+(uint64_t)offset+done));if(r<=0)runtime_fail("RomFS read failure");done+=(uint64_t)r;}
+#ifdef CASTLEVANIA_NATIVE_PROBE
+ if(getenv("CASTLEVANIA_HLE_TRACE")&&strstr(entry_name(e),"global-metadata.dat"))fprintf(stderr,"[castlevania] metadata read offset=%lld requested=%llu got=%llu destination=%p\n",(long long)offset,(unsigned long long)size,(unsigned long long)done,buffer);
+#endif
  if(profile){uint64_t now=runtime_now_ns();atomic_fetch_add(&read_calls,1);atomic_fetch_add(&read_bytes,done);atomic_fetch_add(&read_ns,now-t0);atomic_fetch_add(&read_prepare_ns,t0-prep_start);
   uint64_t last=atomic_load(&read_report_ns);
   if(now-last>1000000000ULL&&atomic_compare_exchange_strong(&read_report_ns,&last,now))
@@ -233,10 +246,60 @@ unsigned runtime_romfs_read(uint64_t *out,uint64_t h,int64_t offset,void *buffer
 unsigned runtime_romfs_size(int64_t *out,uint64_t h) {Entry e;if(!out||!handle_entry(h,&e))return INVALID;int fd;uint64_t base,size;handle_source(h,&e,&fd,&base,&size);*out=(int64_t)size;return 0;}
 void runtime_romfs_close(uint64_t h) {Entry e;if(!handle_entry(h,&e))runtime_fail("close invalid file handle");pthread_mutex_lock(&lock);handles[h-0x100000000ULL]=0;handle_ovl[h-0x100000000ULL]=0;pthread_mutex_unlock(&lock);}
 unsigned runtime_romfs_entry_type(int *out,const char *path) {
+ if(out&&path&&*mount_name){
+  size_t n=strlen(mount_name);
+  if(!strncmp(path,mount_name,n)&&path[n]==':'&&path[n+1]=='/'){
+   const char *rest=path+n+2;while(*rest=='/')rest++;
+   if(!*rest){*out=0;return 0;} /* Mounted RomFS root. */
+  }
+ }
  if(!out)return INVALID;const char *p=rom_path(path);if(!p)return NOT_FOUND;uint64_t i=lower(p);if(i<file_count&&!strcmp(entry_name(entry(i)),p)){*out=1;return 0;}
  char dir[4096];if(snprintf(dir,sizeof(dir),"%s/",p)>=(int)sizeof(dir))return INVALID;i=lower(dir);if(i<file_count&&!strncmp(entry_name(entry(i)),dir,strlen(dir))){*out=0;return 0;}return NOT_FOUND;
 }
 int runtime_romfs_owns(const char *path) {size_t n=strlen(mount_name);return n&&path&&!strncmp(path,mount_name,n)&&path[n]==':';}
+int runtime_romfs_mounted(const char *name) {return name&&*mount_name&&!strcmp(name,mount_name);}
+int runtime_romfs_dir_handle(uint64_t h) {return h>=ROM_DIR_BASE&&h<ROM_DIR_BASE+ROM_DIR_COUNT;}
+unsigned runtime_romfs_open_dir(uint64_t *out,const char *path,int mode) {
+ if(!out||!path||mode<1||mode>3)return INVALID;
+ const char *p=rom_path(path);
+ if(!p){size_t n=strlen(mount_name);if(strncmp(path,mount_name,n)||path[n]!=':'||path[n+1]!='/')return NOT_FOUND;
+  for(p=path+n+2;*p=='/';p++){}if(*p)return NOT_FOUND;}
+ char prefix[4096];size_t len=strlen(p);if(len+2>sizeof prefix)return INVALID;
+ memcpy(prefix,p,len);if(len)prefix[len++]='/';prefix[len]=0;
+ uint64_t first=len?lower(prefix):0;
+ if(first>=file_count||(len&&strncmp(entry_name(entry(first)),prefix,len)))return NOT_FOUND;
+ pthread_mutex_lock(&lock);
+ for(unsigned i=0;i<ROM_DIR_COUNT;i++)if(!rom_dirs[i].used){RomDir *d=&rom_dirs[i];d->used=1;d->mode=mode;d->cursor=first;d->last[0]=0;
+  memcpy(d->prefix,prefix,len+1);*out=ROM_DIR_BASE+i;pthread_mutex_unlock(&lock);return 0;}
+ pthread_mutex_unlock(&lock);runtime_fail("RomFS directory handle table full");return INVALID;
+}
+unsigned runtime_romfs_read_dir(int64_t *count,void *entries,uint64_t h,int64_t max) {
+ if(!runtime_romfs_dir_handle(h)||!count||max<0||(!entries&&max))return INVALID;
+ pthread_mutex_lock(&lock);RomDir *d=&rom_dirs[h-ROM_DIR_BASE];if(!d->used){pthread_mutex_unlock(&lock);return INVALID;}
+ size_t plen=strlen(d->prefix);int64_t n=0;RomDirEntry *out=entries;
+ while(n<max&&d->cursor<file_count){Entry e=entry(d->cursor++);const char *name=entry_name(e);
+  if(strncmp(name,d->prefix,plen)){d->cursor=file_count;break;}
+  const char *child=name+plen,*slash=strchr(child,'/');size_t clen=slash?(size_t)(slash-child):strlen(child);
+  if(!clen||clen>768)continue;
+  if(strlen(d->last)==clen&&!memcmp(d->last,child,clen))continue;
+  memcpy(d->last,child,clen);d->last[clen]=0;
+  int isdir=slash!=NULL;if(!(d->mode&(isdir?1:2)))continue;
+  memset(&out[n],0,sizeof out[n]);memcpy(out[n].name,child,clen);out[n].type=isdir?0:1;out[n].size=isdir?0:(int64_t)e.size;n++;
+ }
+#ifdef CASTLEVANIA_NATIVE_PROBE
+ if(getenv("CASTLEVANIA_HLE_TRACE")&&strstr(d->prefix,"Metadata")){
+  fprintf(stderr,"[castlevania] ReadDirectory %s max=%lld count=%lld",d->prefix,(long long)max,(long long)n);
+  for(int64_t j=0;j<n;j++)fprintf(stderr," [%s type=%d size=%lld]",out[j].name,out[j].type,(long long)out[j].size);
+  fputc('\n',stderr);
+ }
+#endif
+ pthread_mutex_unlock(&lock);*count=n;return 0;
+}
+void runtime_romfs_close_dir(uint64_t h) {
+ if(!runtime_romfs_dir_handle(h))runtime_fail("invalid RomFS directory handle");
+ pthread_mutex_lock(&lock);RomDir *d=&rom_dirs[h-ROM_DIR_BASE];if(!d->used){pthread_mutex_unlock(&lock);runtime_fail("closed RomFS directory handle");}
+ d->used=0;pthread_mutex_unlock(&lock);
+}
 int runtime_romfs_handle(uint64_t h) {return h>0x100000000ULL&&h<0x100000000ULL+NH;}
 unsigned runtime_romfs_read_options(uint64_t *out,uint64_t h,int64_t off,void *buf,uint64_t size) {return runtime_romfs_read(out,h,off,buf,size);}
 void *runtime_fs_override(const char *name) {
@@ -246,6 +309,7 @@ void *runtime_fs_override(const char *name) {
 }
 void runtime_fs_probe(void) {
  runtime_fs_init();need(mount_rom("rom",NULL,0)==0,"mount RomFS");unsigned count=0;uint8_t buffer[257];uint64_t sum=0;
+ int root_type=-1;need(!runtime_romfs_entry_type(&root_type,"rom:/")&&root_type==0,"RomFS root entry type");
  /* Audio stream paths include an extra slash after the mount root. Verify
     actual resource lookup and bytes, while still rejecting path traversal. */
  {

@@ -57,12 +57,17 @@ def romfs():
     return head + dirs + files + payload
 
 
-def ivfc(image):
+def ivfc(image, padded_hash_level=False):
     layers = [image]
-    for _ in range(5):
+    for level in range(5):
         data = layers[0]
-        layers.insert(0, b''.join(hashlib.sha256(data[i:i+4096].ljust(4096, b'\0')).digest()
-                                  for i in range(0, len(data), 4096)))
+        hashes = b''.join(hashlib.sha256(data[i:i+4096].ljust(4096, b'\0')).digest()
+                          for i in range(0, len(data), 4096))
+        if padded_hash_level and level == 0:
+            hashes = hashes.ljust(8192, b'\0')
+        if padded_hash_level and level == 1:
+            hashes = hashes[:32] + bytes(32)
+        layers.insert(0, hashes)
     fs = bytearray(512)
     fs[2:5] = bytes([0, 3, 3])
     fs[8:12] = b'IVFC'
@@ -75,7 +80,7 @@ def ivfc(image):
     return fs, section
 
 
-def nca(managed=False, title=TITLE, content=0):
+def nca(managed=False, title=TITLE, content=0, padded_hash_level=False):
     pfs = partition([('main', b'synthetic main'), ('main.npdm', b'synthetic metadata')])
     fs = bytearray(512)
     fs[2:5] = bytes([1, 2, 3])
@@ -83,7 +88,7 @@ def nca(managed=False, title=TITLE, content=0):
     fs[8:40] = hashlib.sha256(hashes).digest()
     struct.pack_into('<IIQQQQ', fs, 0x28, 4096, 2, 0, len(hashes), 512, len(pfs))
     exefs = hashes.ljust(512, b'\0') + pfs.ljust(512, b'\0')
-    romfs_header, image = ivfc(romfs())
+    romfs_header, image = ivfc(romfs(), padded_hash_level)
     sections = [(fs, exefs), (romfs_header, image)] if content == 0 else [(romfs_header, image)]
     hdr = bytearray(0xc00)
     hdr[0x200:0x204] = b'NCA3'
@@ -217,6 +222,67 @@ class Containers(unittest.TestCase):
                                  '--output', romout], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((romout / 'romfs.bin').read_bytes(), romfs())
+
+    def test_select_each_title_from_combined_xci_without_mixing_romfs(self):
+        other = 0x01005F4027E94000
+        contents = partition([
+            ('main-program.nca', nca(title=TITLE)),
+            ('main.cnmt.nca', nca(title=TITLE, content=1)),
+            ('gallery-program.nca', nca(title=other)),
+            ('gallery.cnmt.nca', nca(title=other, content=1)),
+        ], hfs=True)
+        head = bytearray(0x200)
+        head[0x100:0x104] = b'HEAD'
+        struct.pack_into('<Q', head, 0x130, 0x200)
+        game = self.path / 'combined.xci'
+        game.write_bytes(head + partition([('secure', contents)], hfs=True))
+        for title, program in ((TITLE, 'main-program.nca'), (other, 'gallery-program.nca')):
+            with self.subTest(title=title):
+                out = self.path / f'{title:016X}' / 'exefs'
+                result = subprocess.run([sys.executable, SCRIPTS / 'extract_exefs.py', game,
+                                         '--keys', self.keys, '--title-id', f'{title:016X}',
+                                         '--output', out], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                manifest = out.parent / 'extraction-manifest.json'
+                self.assertEqual(json.loads(manifest.read_text())['program']['name'], program)
+                romout = out.parent / 'romfs'
+                result = subprocess.run([sys.executable, SCRIPTS / 'extract_romfs.py',
+                                         '--keys', self.keys, '--manifest', manifest,
+                                         '--output', romout], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((romout / 'romfs.bin').read_bytes(), romfs())
+
+    def test_romfs_accepts_zeroed_unused_hash_storage(self):
+        game = self.path / 'zero-padded.nsp'
+        game.write_bytes(partition([('program.nca', nca(padded_hash_level=True))]))
+        out, _ = self.extract(game)
+        romout = out.parent / 'romfs'
+        result = subprocess.run([sys.executable, SCRIPTS / 'extract_romfs.py',
+                                 '--keys', self.keys, '--manifest', out.parent / 'extraction-manifest.json',
+                                 '--output', romout], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((romout / 'romfs.bin').read_bytes(), romfs())
+
+    def test_extract_addon_publicdata_romfs_from_nsp(self):
+        addon = TITLE + 0x1001
+        game = self.path / 'addon.nsp'
+        game.write_bytes(partition([('addon.cnmt.nca', nca(title=addon, content=1)),
+                                    ('addon-data.nca', nca(managed=True, title=addon, content=5)),
+                                    ('common.tik', ticket())]))
+        out = self.path / 'addon-romfs'
+        command = [sys.executable, SCRIPTS / 'extract_romfs.py', '--keys', self.keys,
+                   '--source', game, '--title-id', f'{addon:016X}', '--output', out]
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((out / 'romfs.bin').read_bytes(), romfs())
+        report = json.loads((out / 'index.json').read_text())
+        self.assertEqual(report['ivfc_blocks'], [1] * 6)
+        self.assertEqual(json.loads((out / 'source-manifest.json').read_text())['program']['title_id'], f'{addon:016X}')
+
+        rejected = subprocess.run(command[:-3] + [f'{TITLE:016X}', '--output', self.path / 'wrong-romfs'],
+                                  capture_output=True, text=True)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn('Mixed-title DLC package', rejected.stderr)
 
     def test_update_metadata_with_base_program_id(self):
         for metadata in ([('update.cnmt.nca', nca(title=TITLE + 0x800, content=1))],

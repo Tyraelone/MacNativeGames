@@ -18,8 +18,8 @@ from extract_update_romfs import merge
 import build_app
 
 
-def update_nca(managed=True):
-    data = nca(managed)
+def update_nca(managed=True, title=TITLE):
+    data = nca(managed, title=title)
     header = bytearray(b''.join(decrypt(HEADER, modes.XTS(i.to_bytes(16, 'big')),
                                      data[i*512:(i+1)*512]) for i in range(6)))
     header[0x604] = 4  # BKTR marker in section 1; these tests extract only ExeFS.
@@ -133,6 +133,35 @@ class Updates(unittest.TestCase):
             merge(base, self.update, self.keys, helper, self.root/'failed')
         self.assertFalse((self.root/'failed').exists())
         self.assertFalse(list(self.root.glob('update-merge-*')))
+
+    def test_merge_selects_requested_title_from_combined_xci(self):
+        selected = 0x0100BA4026E94000
+        selected_program = nca(title=selected)
+        secure = partition([('other.nca', nca()), ('selected.nca', selected_program),
+                            ('selected.cnmt.nca', nca(title=selected, content=1))], hfs=True)
+        head = bytearray(0x200)
+        head[0x100:0x104] = b'HEAD'
+        struct.pack_into('<Q', head, 0x130, 0x200)
+        base = self.root / 'combined.xci'
+        base.write_bytes(head + partition([('secure', secure)], hfs=True))
+        update = self.root / 'selected-update.nsp'
+        update.write_bytes(partition([('update.nca', update_nca(False, title=selected))]))
+        with patch('extract_update_romfs.shutil.disk_usage') as space:
+            space.return_value.free = 100 * 2**30
+            def hactool_run(command, **kwargs):
+                start = int(kwargs['env']['MNG_BASE_RANGE_OFFSET'])
+                size = int(kwargs['env']['MNG_BASE_RANGE_SIZE'])
+                with base.open('rb') as source:
+                    source.seek(start)
+                    self.assertEqual(source.read(size), selected_program)
+                target = Path(next(arg.split('=', 1)[1] for arg in command if arg.startswith('--section')))
+                target.write_bytes(romfs())
+                kwargs['stdout'].write(''.join(f'Level {i} (GOOD)\n' for i in range(6)))
+                return subprocess.CompletedProcess(command, 0)
+            with patch('extract_update_romfs.subprocess.run', side_effect=hactool_run):
+                merge(base, update, self.keys, Path('/usr/bin/true'), self.root / 'merged-selected',
+                      title_id=f'{selected:016X}')
+        self.assertEqual((self.root / 'merged-selected/romfs.bin').read_bytes(), romfs())
 
     def test_bundle_contains_only_selected_game_version(self):
         for version, display in (('v112', '1.1.2'), ('v143', '1.4.3')):

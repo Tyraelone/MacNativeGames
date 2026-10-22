@@ -5,9 +5,13 @@
 #include "runtime.h"
 #include "ipc.h"
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef CASTLEVANIA_NATIVE_PROBE
+#include <CommonCrypto/CommonDigest.h>
+#endif
 
 #define CMIF_IN_MAGIC 0x49434653u   /* "SFCI" */
 #define CMIF_OUT_MAGIC 0x4f434653u  /* "SFCO" */
@@ -22,6 +26,95 @@ static unsigned nservices;
 static __thread uint64_t trace_fp, trace_lr;   /* guest frame of the current request, for failure reports */
 static pthread_mutex_t registry = PTHREAD_MUTEX_INITIALIZER;
 
+#ifdef CASTLEVANIA_NATIVE_PROBE
+static void castlevania_fsp(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    (void)rs;
+    if (rq->cmd == 1 && rq->data_size >= 8) return; /* SetCurrentProcess */
+    if (rq->cmd == 1005 && rq->data_size == 0) { uint32_t mode = 0; IPC_OUT(rs, mode); return; }
+    ipc_unimplemented(s, rq);
+}
+static void castlevania_ro(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    (void)rs;
+    if (rq->cmd == 4) {
+        if (!rq->has_pid || rq->ncopy != 1 || rq->data_size < 8)
+            runtime_fail("ldr:ro RegisterProcessHandle arguments");
+        return;
+    }
+    if (rq->cmd == 2 && rq->data_size >= 24) {
+        uint64_t args[3]; memcpy(args, rq->data, sizeof args);
+        static const uint8_t nrr_digest[32] = {
+            0xdd,0x97,0xa3,0xca,0x8c,0x5b,0xff,0x34,0x7b,0xe4,0x12,0x89,0xbe,0xf9,0xc8,0x8a,
+            0xd6,0x29,0x3f,0x20,0x4c,0xe1,0x62,0xea,0x3a,0x61,0x4a,0xee,0x5b,0xd4,0x57,0x70};
+        static const uint8_t nro_digest[32] = {
+            0x3a,0x26,0xa5,0xd5,0x36,0xf8,0xdb,0xc5,0xb2,0xbd,0x46,0x19,0x6c,0xc3,0x9d,0xd0,
+            0x4a,0xbf,0x34,0x46,0xc2,0xbc,0xe9,0x7d,0x22,0x08,0xfd,0x54,0xc9,0x12,0x2c,0xbe};
+        if (!rq->has_pid || args[0] != 0 || args[2] != 0x1000 || (args[1] & 0xfff))
+            runtime_fail("ldr:ro RegisterModuleInfo arguments");
+        const uint8_t *nrr = ipc_guest(args[1], args[2]); uint8_t digest[32];
+        CC_SHA256(nrr, (CC_LONG)args[2], digest);
+        if (memcmp(nrr, "NRR0", 4) || memcmp(digest, nrr_digest, 32) ||
+            memcmp(nrr + 0x350, nro_digest, 32))
+            runtime_fail("ldr:ro NRR does not match verified game content");
+        fprintf(stderr, "[castlevania] registered verified NRR for cimgui.nro\n");
+        return;
+    }
+    ipc_unimplemented(s, rq);
+}
+static void castlevania_nifm_general(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    (void)rs;
+    ipc_unimplemented(s, rq);
+}
+static void castlevania_nifm(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    if (rq->cmd == 5 && rq->has_pid && rq->data_size >= 8) {
+        uint64_t reserved;memcpy(&reserved,rq->data,8);
+        if (reserved) runtime_fail("nifm:u CreateGeneralService reserved PID");
+        rs->move[rs->nmove++] = runtime_ipc_new_session("nifm:general", castlevania_nifm_general, NULL, NULL);
+        return;
+    }
+    ipc_unimplemented(s, rq);
+}
+static void castlevania_bsd(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    if (rq->cmd == 0) {
+        if (!rq->has_pid || rq->ncopy != 1 || rq->data_size < 48 ||
+            !runtime_handle_get(rq->copy[0], 0)) runtime_fail("bsd:s RegisterClient arguments");
+        uint32_t client_id = 0; IPC_OUT(rs, client_id); return;
+    }
+    if (rq->cmd == 1 && rq->has_pid && rq->data_size >= 8) return; /* StartMonitoring */
+    ipc_unimplemented(s, rq);
+}
+static void castlevania_ssl(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    (void)rs;
+    if(rq->cmd==5 && rq->data_size>=4) { /* SetInterfaceVersion */
+        uint32_t version;memcpy(&version,rq->data,4);
+        if(version>=1 && version<=5)return;
+        runtime_fail("ssl:s unsupported interface version");
+    }
+    ipc_unimplemented(s,rq);
+}
+static uint32_t castlevania_hid_event;
+static void castlevania_make_hid_event(void) {castlevania_hid_event=runtime_event_new();runtime_event_signal(castlevania_hid_event);}
+static void castlevania_hid(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    if(rq->cmd==121 && rq->has_pid && rq->data_size>=8) { /* GetNpadJoyHoldType: vertical. */
+        uint64_t hold_type=0;IPC_OUT(rs,hold_type);return;
+    }
+    if(rq->cmd==106 && rq->has_pid && rq->data_size>=20) { /* AcquireNpadStyleSetUpdateEventHandle */
+        static pthread_once_t once=PTHREAD_ONCE_INIT;
+        pthread_once(&once,castlevania_make_hid_event);
+        rs->copy[rs->ncopy++]=runtime_event_readable(castlevania_hid_event);
+        return;
+    }
+    ipc_unimplemented(s,rq);
+}
+__attribute__((constructor)) static void register_castlevania_fsp(void) {
+    runtime_ipc_register("fsp-srv", castlevania_fsp, NULL, NULL);
+    runtime_ipc_register("ldr:ro", castlevania_ro, NULL, NULL);
+    runtime_ipc_register("nifm:u", castlevania_nifm, NULL, NULL);
+    runtime_ipc_register("bsd:s", castlevania_bsd, NULL, NULL);
+    runtime_ipc_register("ssl:s", castlevania_ssl, NULL, NULL);
+    runtime_ipc_register("hid", castlevania_hid, NULL, NULL);
+}
+#endif
+
 void runtime_ipc_register(const char *name, IpcHandler handler, IpcOpen open, void (*close)(void *)) {
     pthread_mutex_lock(&registry);
     if (nservices == sizeof services / sizeof *services) runtime_fail("IPC service registry full");
@@ -32,7 +125,7 @@ void runtime_ipc_register(const char *name, IpcHandler handler, IpcOpen open, vo
 static IpcSession *session_new(const char *name, IpcHandler handler, void *state, void (*close)(void *)) {
     IpcSession *s = calloc(1, sizeof *s);
     if (!s) runtime_fail("IPC session allocation");
-    *s = (IpcSession){name, handler, state, close};
+    *s = (IpcSession){name, handler, state, close, 0};
     return s;
 }
 uint32_t runtime_ipc_new_session(const char *name, IpcHandler handler, void *state, void (*close)(void *)) {
@@ -97,14 +190,20 @@ static void parse(const uint32_t *m, IpcRequest *rq, const uint32_t **data_words
     if ((const uint8_t *)recv - (const uint8_t *)m > MSG_BYTES) runtime_fail("IPC request exceeds message buffer");
 }
 
-static void respond(uint32_t *m, int tipc, const IpcResponse *rs) {
+static void respond(uint32_t *m, int tipc, int domain, const IpcResponse *rs) {
     uint32_t out[MSG_BYTES / 4]; memset(out, 0, sizeof out);
-    unsigned special = rs->ncopy || rs->nmove;
+    uint32_t objects[8]; unsigned nobjects = 0;
+    uint32_t moved[8]; unsigned nmoved = 0;
+    for (unsigned i = 0; i < rs->nmove; i++) {
+        if (domain && runtime_handle_get(rs->move[i], 1)) objects[nobjects++] = rs->move[i];
+        else moved[nmoved++] = rs->move[i];
+    }
+    unsigned special = rs->ncopy || nmoved;
     uint32_t *p = out + 2;
     if (special) {
-        *p++ = (rs->ncopy << 1) | (rs->nmove << 5);
+        *p++ = (rs->ncopy << 1) | (nmoved << 5);
         for (unsigned i = 0; i < rs->ncopy; i++) *p++ = rs->copy[i];
-        for (unsigned i = 0; i < rs->nmove; i++) *p++ = rs->move[i];
+        for (unsigned i = 0; i < nmoved; i++) *p++ = moved[i];
     }
     for (unsigned i = 0; i < rs->nxout; i++, p += 2) {
         uint64_t a = rs->xout[i].addr;
@@ -112,15 +211,19 @@ static void respond(uint32_t *m, int tipc, const IpcResponse *rs) {
         p[1] = (uint32_t)a;
     }
     uint8_t *words = (uint8_t *)p, *payload;
-    unsigned header = tipc ? 4 : 16;
+    unsigned header = tipc ? 4 : domain ? 32 : 16;
     if (tipc) payload = words;
     else payload = (uint8_t *)out + (((words - (uint8_t *)out) + 15) & ~15);
-    unsigned used = (unsigned)(payload - words) + header + rs->data_size;
+    unsigned used = (unsigned)(payload - words) + header + rs->data_size + 4 * nobjects;
     unsigned nwords = tipc ? (used + 3) / 4 : (used + 16 + 3) / 4;   /* CMIF keeps alignment slack like libnx */
     if ((size_t)(words - (uint8_t *)out) + nwords * 4 > MSG_BYTES) runtime_fail("IPC response exceeds message buffer");
     if (tipc) memcpy(payload, &rs->result, 4);
-    else { uint32_t h[4] = {CMIF_OUT_MAGIC, 0, rs->result, 0}; memcpy(payload, h, 16); }
+    else { uint32_t h[4] = {CMIF_OUT_MAGIC, 0, rs->result, 0};
+        if (domain) { uint32_t d[4] = {nobjects, 0, 0, 0}; memcpy(payload, d, 16); }
+        memcpy(payload + (domain ? 16 : 0), h, 16);
+    }
     memcpy(payload + header, rs->data, rs->data_size);
+    if (nobjects) memcpy(payload + header + rs->data_size, objects, 4 * nobjects);
     out[0] = (rs->nxout & 0xf) << 16;
     out[1] = (nwords & 0x3ff) | (special ? 1u << 31 : 0);
     memcpy(m, out, MSG_BYTES);
@@ -129,9 +232,12 @@ static void respond(uint32_t *m, int tipc, const IpcResponse *rs) {
 /* ---------- Control requests (CMIF) ---------- */
 static void control(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
     switch (rq->cmd) {
+    case 0: { uint32_t object_id = 1; s->domain = 1; IPC_OUT(rs, object_id);
+        return; } /* ConvertCurrentObjectToDomain */
     case 3: { uint16_t n = POINTER_BUFFER_SIZE; IPC_OUT(rs, n); return; }   /* QueryPointerBufferSize */
     case 2: case 4:                                                           /* CloneCurrentObject(Ex) */
         rs->move[rs->nmove++] = runtime_ipc_new_session(s->name, s->handler, s->state, NULL);
+        ((IpcSession *)runtime_handle_get(rs->move[rs->nmove-1],1))->domain=s->domain;
         return;
     default:
         fprintf(stderr, "[totk-ipc] %s: control command %u (domains are not implemented)\n", s->name, rq->cmd);
@@ -147,11 +253,43 @@ static void dispatch(IpcSession *s, uint32_t *m) {
     if (rq.type == T_CLOSE || rq.type == T_TIPC_CLOSE) return;
     int tipc = rq.type >= T_TIPC_BASE;
     const uint8_t *bytes = (const uint8_t *)words, *end = bytes + ndata * 4;
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    if (!s->domain && !tipc && (rq.type == T_REQUEST || rq.type == T_REQUEST_CTX)) {
+        const uint8_t *candidate = (const uint8_t *)m + (((bytes - (const uint8_t *)m) + 15) & ~15);
+        uint32_t magic = 0;
+        if (candidate + 20 <= end) memcpy(&magic, candidate + 16, 4);
+        if (candidate + 20 <= end && candidate[0] == 1 && magic == CMIF_IN_MAGIC) {
+            s->domain = 1;
+            fprintf(stderr,"[totk-ipc] %s domain request on cloned session\n",s->name);
+        }
+    }
+#endif
+    int domain = s->domain && !tipc && (rq.type == T_REQUEST || rq.type == T_REQUEST_CTX);
     if (tipc) { rq.cmd = rq.type - T_TIPC_BASE; rq.data = bytes; rq.data_size = (uint32_t)(end - bytes); }
     else if (rq.type == T_REQUEST || rq.type == T_REQUEST_CTX || rq.type == T_CONTROL || rq.type == T_CONTROL_CTX) {
         const uint8_t *payload = (const uint8_t *)m + (((bytes - (const uint8_t *)m) + 15) & ~15);
+        if (domain) {
+            if (payload + 16 > end) runtime_fail("IPC domain header out of range");
+            unsigned type = payload[0], nobjects = payload[1]; uint16_t data_size; uint32_t object_id;
+            memcpy(&data_size, payload + 2, 2); memcpy(&object_id, payload + 4, 4);
+            if (type == 2) {
+                if (object_id != 1) { uint64_t regs[2] = {object_id, 0};
+                    if (!runtime_handle_get(object_id, 1) || !svc_thread(0x16, regs) || regs[0])
+                        runtime_fail("IPC domain object close"); }
+                return;
+            }
+            if (type != 1 || nobjects || data_size < 16 || payload + 16 + data_size > end)
+                runtime_fail("IPC domain request header");
+            if (object_id != 1) {
+                IpcSession *child = runtime_handle_get(object_id, 1);
+                if (!child) runtime_fail("IPC domain object missing");
+                s = child;
+            }
+            payload += 16;
+            end = payload + data_size;
+        }
         uint32_t h[4]; memcpy(h, payload, 16);
-        if (h[0] != CMIF_IN_MAGIC) { fprintf(stderr, "[totk-ipc] %s: bad CMIF magic %#x (domain sessions are not implemented)\n", s->name, h[0]); runtime_fail("IPC bad CMIF header"); }
+        if (h[0] != CMIF_IN_MAGIC) { fprintf(stderr, "[totk-ipc] %s: bad CMIF magic %#x type=%u domain=%d session=%p\n", s->name, h[0],rq.type,domain,(void *)s); runtime_fail("IPC bad CMIF header"); }
         rq.cmd = h[2]; rq.data = payload + 16; rq.data_size = payload + 16 <= end ? (uint32_t)(end - payload - 16) : 0;
     } else {
         fprintf(stderr, "[totk-ipc] %s: message type %u at %p:", s->name, rq.type, (void *)m);
@@ -160,7 +298,7 @@ static void dispatch(IpcSession *s, uint32_t *m) {
     }
     if (rq.type == T_CONTROL || rq.type == T_CONTROL_CTX) control(s, &rq, &rs);
     else s->handler(s, &rq, &rs);
-    respond(m, tipc, &rs);
+    respond(m, tipc, domain, &rs);
 }
 
 /* ---------- sm: service manager ---------- */

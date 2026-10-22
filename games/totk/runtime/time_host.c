@@ -10,6 +10,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <errno.h>
 
 typedef struct { int64_t value; uint8_t source[16]; } SteadyClockTimePoint;
 typedef struct { int64_t offset; SteadyClockTimePoint point; } SystemClockContext;
@@ -39,6 +40,20 @@ static int64_t posix_now(void) {
     static long off = -1; if (off < 0) { const char *e = getenv("TOTK_TIME_OFFSET"); off = e ? atol(e) : 0; if (off < 0) off = 0; }   /* diagnostic: shift the clock the game sees (seconds) */
     return (int64_t)time(NULL) + off;
 }
+#ifdef CASTLEVANIA_NATIVE_PROBE
+/* The SDK's weak clock_gettime dispatch is not initialized on this native
+   host. libc++ system_clock::now calls it with id 0 while loading a scene. */
+static int guest_clock_gettime(int id, struct timespec *out) {
+    if (!out) { errno=EINVAL; return -1; }
+    clockid_t host;
+    switch (id) {
+    case 0: host=CLOCK_REALTIME; break;
+    case 1: host=CLOCK_MONOTONIC; break;
+    default: errno=EINVAL; return -1;
+    }
+    return clock_gettime(host,out);
+}
+#endif
 
 static unsigned initialize(void) { initialized = 1; pthread_once(&once, make_source); return 0; }
 static unsigned finalize(void) { initialized = 0; return 0; }
@@ -97,6 +112,9 @@ static int64_t user_difference(const ClockSnapshot *a, const ClockSnapshot *b) {
 
 void *runtime_time_override(const char *name) {
     static const struct { const char *name; void *fn; } map[] = {
+#ifdef CASTLEVANIA_NATIVE_PROBE
+        {"clock_gettime", guest_clock_gettime},
+#endif
         {"_ZN2nn4time10InitializeEv", initialize}, {"_ZN2nn4time8FinalizeEv", finalize}, {"_ZN2nn4time13IsInitializedEv", is_initialized},
         {"_ZN2nn4time23StandardUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", user_time},
         {"_ZN2nn4time26StandardNetworkSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", user_time},

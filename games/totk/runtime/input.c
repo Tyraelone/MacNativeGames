@@ -28,14 +28,30 @@ static void user_input(const char *what){
  fprintf(stderr,"[input] user input (%s)%s%s\n",what,agent?": the user is playing this test session of ":"",agent?owner:"");
 }
 /* Keys from the window are the user's; scripted and auto-load presses use the synthetic entry.
-   Key 1 toggles the shortcut reminder in frontend.m. Key 2 (Mac key code 19) cycles MetalFX frame interpolation:
+   Castlevania key 2 cycles game/default, display and 30 fps cadence; key 3
+   switches standard and MetalFX output scaling. The original game uses the
+   mappings below. Key 1 toggles the shortcut reminder in frontend.m.
+   Key 2 (Mac key code 19) cycles MetalFX frame interpolation:
    off -> 30+30 -> half the refresh rate -> uncapped (totk_mfx.m). Key 3 (key code 20) cycles 2K modes:
    MetalFX 2K -> native 2K -> off (runtime_output_mode_cycle). Held-key repeats do not cycle. */
 enum { KEY_INTERP_TOGGLE = 19, KEY_OUTPUT_MODE_CYCLE = 20 };
 void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
  if(press&&code==18){extern void runtime_shortcut_help_toggle(void);runtime_shortcut_help_toggle();}
+#ifdef CASTLEVANIA_NATIVE_PROBE
+ static _Atomic int cv_frame_mode,cv_picture_mode;
+ if(press&&code==KEY_INTERP_TOGGLE){extern int nvn_castlevania_frame_mode_cycle(void);extern void runtime_shortcut_status(int,int);
+  int mode=nvn_castlevania_frame_mode_cycle();atomic_store(&cv_frame_mode,mode);
+  runtime_shortcut_status(mode,atomic_load(&cv_picture_mode));}
+ if(press&&code==KEY_OUTPUT_MODE_CYCLE){extern void dm_gfx_set_flag(const char *,int);extern void runtime_shortcut_status(int,int);
+  int mode=!atomic_load(&cv_picture_mode);atomic_store(&cv_picture_mode,mode);
+  dm_gfx_set_flag("mfx_output",mode);dm_gfx_set_flag("mfx_upscale",mode);
+  fprintf(stderr,"[castlevania] key 3 picture: %s\n",mode?"MetalFX spatial":"standard scaling");
+  runtime_shortcut_status(atomic_load(&cv_frame_mode),mode);}
+#else
  if(press&&code==KEY_INTERP_TOGGLE){extern void dm_gfx_set_flag(const char *name,int v);dm_gfx_set_flag("mfx_interp",-1);}
- if(press&&code==KEY_OUTPUT_MODE_CYCLE)runtime_output_mode_cycle();}
+ if(press&&code==KEY_OUTPUT_MODE_CYCLE)runtime_output_mode_cycle();
+#endif
+}
 void runtime_input_key(unsigned code,int down){if(down&&code<128)user_input("keyboard");runtime_input_key_synthetic(code,down);}
 void runtime_input_clear(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));pending=0;pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
 static void initialize(void){pthread_mutex_lock(&inputLock);enabled=true;pthread_mutex_unlock(&inputLock);fprintf(stderr,"[totk] native keyboard controller initialized\n");}
@@ -57,6 +73,9 @@ static int full_states(NpadState *out,int max,const uint32_t *id){return pad_sta
 static int handheld_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,2);}
 static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style){if(max<=0)return 0;if(id)input_log(want_style==2?"handheld state":"full-key state",*id);if(!out||!id)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);NpadState state={.sampling=++sample};if(enabled&&allowed&&*id==pad_id()&&want_style==pad_style()&&(styles&want_style)){
  state.attributes=1;for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=pending;pending=0;
+#ifdef CASTLEVANIA_NATIVE_PROBE
+ if(getenv("TOTK_INPUT_LOG")){static uint64_t last_buttons;if(state.buttons!=last_buttons){fprintf(stderr,"[castlevania-input] buttons %#llx -> %#llx\n",(unsigned long long)last_buttons,(unsigned long long)state.buttons);last_buttons=state.buttons;}}
+#endif
  state.lx=32767*((int)keys[2]-(int)keys[0]);state.ly=32767*((int)keys[13]-(int)keys[1]);state.rx=32767*((int)keys[124]-(int)keys[123]);state.ry=32767*((int)keys[126]-(int)keys[125]);
  RuntimeGamepadState pad;runtime_gamepad_read(&pad);state.buttons|=pad.buttons;
  if(pad.buttons&~padSeen||abs(pad.lx)>16384||abs(pad.ly)>16384||abs(pad.rx)>16384||abs(pad.ry)>16384)user_input("controller");padSeen=pad.buttons;
@@ -73,6 +92,19 @@ typedef struct{int64_t sampling;uint32_t modifiers,attributes;uint64_t keys[4];}
 _Static_assert(sizeof(MouseState)==40&&sizeof(KeyboardState)==48,"mouse/keyboard ABI");
 static bool mouseReady,keyboardReady;
 static void initialize_mouse(void){pthread_mutex_lock(&inputLock);mouseReady=true;pthread_mutex_unlock(&inputLock);}
+#ifdef CASTLEVANIA_NATIVE_PROBE
+static void initialize_touch_screen(void){fprintf(stderr,"[castlevania] touch screen input initialized (no touch device)\n");}
+static int touch_screen_states(void *out,int max){(void)out;(void)max;return 0;}
+typedef struct{uint32_t body,buttons;} NpadControllerColor;
+static uint32_t controller_color_one(NpadControllerColor *out,const uint32_t *id){
+ if(!out||!id)runtime_fail("controller color arguments");
+ if(*id!=0x20&&*id>7)runtime_fail("controller color id");
+ *out=(NpadControllerColor){.body=0xe6e6e6,.buttons=0x333333};return 0;
+}
+static uint32_t controller_color_pair(NpadControllerColor *left,NpadControllerColor *right,const uint32_t *id){
+ uint32_t result=controller_color_one(left,id);if(right)*right=*left;return result;
+}
+#endif
 static void initialize_keyboard(void){pthread_mutex_lock(&inputLock);keyboardReady=true;pthread_mutex_unlock(&inputLock);}
 static int mouse_states(MouseState *out,int max){if(max<=0)return 0;if(!out)runtime_fail("mouse output pointer");pthread_mutex_lock(&inputLock);if(!mouseReady)runtime_fail("mouse used before InitializeMouse");*out=(MouseState){.sampling=++sample};pthread_mutex_unlock(&inputLock);return 1;}
 static void keyboard_state(KeyboardState *out){if(!out)runtime_fail("keyboard output pointer");pthread_mutex_lock(&inputLock);if(!keyboardReady)runtime_fail("keyboard used before InitializeKeyboard");*out=(KeyboardState){.sampling=++sample};pthread_mutex_unlock(&inputLock);}
@@ -90,6 +122,12 @@ static uint32_t show_controller_support(ControllerSupportResult *out,const void 
 void *runtime_input_override(const char *name){
  void *feedback=runtime_hid_feedback_override(name);if(feedback)return feedback;
  static const struct{const char *name;void *fn;} entries[]={
+#ifdef CASTLEVANIA_NATIVE_PROBE
+ {"_ZN2nn3hid21InitializeTouchScreenEv",initialize_touch_screen},
+ {"_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_EEEi",touch_screen_states},
+ {"_ZN2nn3hid22GetNpadControllerColorEPNS0_19NpadControllerColorERKj",controller_color_one},
+ {"_ZN2nn3hid22GetNpadControllerColorEPNS0_19NpadControllerColorES2_RKj",controller_color_pair},
+#endif
  {"_ZN2nn3hid14InitializeNpadEv",initialize},{"_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm",supported_ids},{"_ZN2nn3hid24SetSupportedNpadStyleSetENS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE",supported_styles},
  {"_ZN2nn3hid15GetNpadStyleSetERKj",style},{"_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj",full_states},
  {"_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyDualStateEiRKj",disconnected_states},{"_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyLeftStateEiRKj",disconnected_states},

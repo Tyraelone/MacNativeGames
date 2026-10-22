@@ -10,6 +10,7 @@
 #include "totk_ui_lang.h"
 static NSWindow *window;
 uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented so far */
+int fps_overlay_hints_enabled(void);
 static CAMetalLayer *metalLayer;
 static NSView *bootOverlay;
 static NSTextField *bootStage,*bootDetail;
@@ -97,13 +98,34 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 @end
 @implementation TOTKShortcutHelp
 -(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:0.86].CGColor;self.layer.cornerRadius=14;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.2].CGColor;
- self.label=[NSTextField labelWithString:@(TOTK_UI("快捷键说明\n1  显示 / 隐藏所有提示\n2  补帧：关 → 30+30 → 刷新率一半 → 不限帧\n3  画质：MetalFX 2K → 原生 2K → 关闭","Shortcuts\n1  Show / hide all overlays\n2  Frame interpolation: off → 30+30 → half refresh rate → unlimited\n3  Picture: MetalFX 2K → native 2K → off"))];self.label.font=[NSFont systemFontOfSize:17 weight:NSFontWeightMedium];self.label.textColor=NSColor.whiteColor;self.label.alignment=NSTextAlignmentCenter;self.label.maximumNumberOfLines=0;self.label.lineBreakMode=NSLineBreakByWordWrapping;self.label.frame=NSInsetRect(self.bounds,20,18);self.label.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;[self addSubview:self.label];}return self;}
+#ifdef CASTLEVANIA_NATIVE_PROBE
+ self.label=[NSTextField labelWithString:@"方向键移动 · J 确认 · K 返回（长按跳过动画）\n1 性能信息：显示 / 隐藏\n2 帧率：游戏默认 → 屏幕刷新率 → 30 FPS\n3 画面放大：标准 → MetalFX"];
+#else
+ self.label=[NSTextField labelWithString:@(TOTK_UI("快捷键说明\n1  显示 / 隐藏所有提示\n2  补帧：关 → 30+30 → 刷新率一半 → 不限帧\n3  画质：MetalFX 2K → 原生 2K → 关闭","Shortcuts\n1  Show / hide all overlays\n2  Frame interpolation: off → 30+30 → half refresh rate → unlimited\n3  Picture: MetalFX 2K → native 2K → off"))];
+#endif
+ self.label.font=[NSFont systemFontOfSize:17 weight:NSFontWeightMedium];self.label.textColor=NSColor.whiteColor;self.label.alignment=NSTextAlignmentCenter;self.label.maximumNumberOfLines=0;self.label.lineBreakMode=NSLineBreakByWordWrapping;self.label.frame=NSInsetRect(self.bounds,20,18);self.label.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;[self addSubview:self.label];}return self;}
 -(NSView *)hitTest:(NSPoint)p{(void)p;return nil;}
 -(void)viewDidMoveToSuperview{[super viewDidMoveToSuperview];[self position];}
 -(void)layout{[super layout];[self position];}
 -(void)position{if(!self.superview)return;CGFloat w=MIN(560,MAX(280,self.superview.bounds.size.width-40)),h=140;NSRect f=NSMakeRect(floor((self.superview.bounds.size.width-w)/2),floor((self.superview.bounds.size.height-h)/2),w,h);if(!NSEqualRects(self.frame,f))self.frame=f;self.label.frame=NSInsetRect(self.bounds,20,18);}
 @end
-void runtime_shortcut_help_toggle(void){int show=fps_overlay_toggle_hints();dispatch_async(dispatch_get_main_queue(), ^{shortcutHelp.hidden=!show;});}
+static unsigned shortcutHintGeneration;
+void runtime_shortcut_help_toggle(void){int show=fps_overlay_toggle_hints();dispatch_async(dispatch_get_main_queue(), ^{shortcutHintGeneration++;shortcutHelp.hidden=!show;});}
+#ifdef CASTLEVANIA_NATIVE_PROBE
+void runtime_shortcut_status(int frame_mode,int picture_mode){
+ dispatch_async(dispatch_get_main_queue(), ^{
+  if(!shortcutHelp)return;
+  NSString *frame=frame_mode==1?@"屏幕刷新率":frame_mode==2?@"30 FPS":@"游戏默认";
+  NSString *picture=picture_mode?@"MetalFX":@"标准";
+  ((TOTKShortcutHelp *)shortcutHelp).label.stringValue=[NSString stringWithFormat:@"方向键移动 · J 确认 · K 返回（长按跳过动画）\n1 性能信息：显示 / 隐藏\n2 帧率：%@（游戏默认 → 刷新率 → 30 FPS）\n3 画面放大：%@（标准 → MetalFX）",frame,picture];
+  unsigned generation=++shortcutHintGeneration;
+  shortcutHelp.hidden=NO;
+  if(!fps_overlay_hints_enabled())dispatch_after(dispatch_time(DISPATCH_TIME_NOW,2*NSEC_PER_SEC),dispatch_get_main_queue(), ^{
+   if(generation==shortcutHintGeneration&&!fps_overlay_hints_enabled())shortcutHelp.hidden=YES;
+  });
+ });
+}
+#endif
 /* The drawable follows the window's pixel size; the present pass scales the game picture (1920x1080 docked) into it and
    keeps 16:9 (black bars on other shapes), so a larger window or full screen shows the game at its own resolution instead
    of a fixed small drawable that the compositor stretches. */
@@ -148,7 +170,11 @@ void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(),
 static void front_install_menu(void){
  NSMenu *menu=[NSMenu new],*appMenu=[NSMenu new];
  NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
+#ifdef CASTLEVANIA_NATIVE_PROBE
+ NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@"退出恶魔城：贝尔蒙特的诅咒" action:@selector(performClose:) keyEquivalent:@"q"];
+#else
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@"Quit Tears of the Kingdom" action:@selector(performClose:) keyEquivalent:@"q"];
+#endif
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
  [appMenu addItem:quit];NSApp.mainMenu=menu;
 }
@@ -167,16 +193,32 @@ void runtime_front_run(void(*callback)(void)){
   window.releasedWhenClosed=NO;   /* a close that waits for a save (windowWillClose) must not free the window the static pointer still holds */
   /* An agent's test game (TOTK_SLOT_OWNER other than user) says so in its title: it plays a save copy and its script closes it. */
   const char *owner=getenv("TOTK_SLOT_OWNER"),*purpose=getenv("TOTK_SLOT_PURPOSE");
+#ifdef CASTLEVANIA_NATIVE_PROBE
+  window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@"恶魔城：贝尔蒙特的诅咒 — 测试局（%s）：%s",owner,purpose&&*purpose?purpose:"test"]:@"恶魔城：贝尔蒙特的诅咒 — Ver. 1.1.0";
+#else
   window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@(TOTK_UI("测试局（%s）Ver. %s：%s — 存档副本，进度不会存进你的存档，脚本会自己关闭","Test session (%s) Ver. %s: %s — save copy, progress is not saved to your save, the script closes it")),owner,TOTK_GAME_VERSION,purpose&&*purpose?purpose:TOTK_UI("代理测试","agent test")]:[NSString stringWithFormat:@"Tears of the Kingdom  Mac — Ver. %s",TOTK_GAME_VERSION];
+#endif
   windowDelegate=[TOTKWindowDelegate new];window.delegate=windowDelegate;
   front_install_menu();
   window.collectionBehavior|=NSWindowCollectionBehaviorFullScreenPrimary;
   window.contentView=[[TOTKInputView alloc] initWithFrame:NSMakeRect(0,0,ww,wh)];
-  metalLayer=[CAMetalLayer layer];metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;metalLayer.drawableSize=CGSizeMake(ww,wh);
+  metalLayer=[CAMetalLayer layer];metalLayer.device=MTLCreateSystemDefaultDevice();
+#ifdef CASTLEVANIA_NATIVE_PROBE
+  /* Castlevania's NVN swapchain is RGBA8 sRGB (format 0x38). Metal decodes it
+     when sampling; the display target must encode back to sRGB. */
+  metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm_sRGB;
+#else
+  metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;
+#endif
+  metalLayer.drawableSize=CGSizeMake(ww,wh);
   metalLayer.framebufferOnly=NO;window.contentView.wantsLayer=YES;window.contentView.layer=metalLayer;
   bootOverlay=[[NSView alloc] initWithFrame:window.contentView.bounds];bootOverlay.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
   bootOverlay.wantsLayer=YES;bootOverlay.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.035 green:0.075 blue:0.09 alpha:1].CGColor;
+#ifdef CASTLEVANIA_NATIVE_PROBE
+  bootStage=[NSTextField labelWithString:@"正在启动恶魔城"];
+#else
   bootStage=[NSTextField labelWithString:@(TOTK_UI("正在启动海拉鲁","Starting Hyrule"))];
+#endif
   bootStage.font=[NSFont systemFontOfSize:25 weight:NSFontWeightSemibold];bootStage.textColor=NSColor.whiteColor;
   bootStage.alignment=NSTextAlignmentCenter;bootStage.frame=NSMakeRect(0,wh/2+20,ww,40);bootStage.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin|NSViewMaxYMargin;
   bootDetail=[NSTextField labelWithString:@(TOTK_UI("正在准备游戏环境","Preparing the game environment"))];
@@ -191,6 +233,10 @@ void runtime_front_run(void(*callback)(void)){
      overlay is hidden. Key 1 still controls its requested visibility. */
   [window.contentView addSubview:shortcutHelp positioned:NSWindowBelow relativeTo:bootOverlay];
   [(TOTKShortcutHelp *)shortcutHelp position];
+#ifdef CASTLEVANIA_NATIVE_PROBE
+  if(fps_overlay_hints_enabled())fps_overlay_toggle_hints();
+  shortcutHelp.hidden=YES;
+#endif
   /* The FPS counter is drawn into the game picture's top-right corner (with the on-screen size) by the present encoder (gfx/nvn/fps_overlay.c). */
   [window makeFirstResponder:window.contentView];[window center];front_sync_drawable();
   if(assume_focus()){[window orderFrontRegardless];}else{[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];}   /* in front of other apps' windows, keyboard left alone */

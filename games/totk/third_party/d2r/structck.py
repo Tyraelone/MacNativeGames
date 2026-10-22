@@ -76,10 +76,11 @@ def sysk(t):
     return None
 
 # ---- sites.tsv ----
-sites = {}; wins = []; jumps = 0; calls = {}
+sites = {}; wins = []; jumps = 0; indirects = {}; calls = {}
 for l in open(f'{out_dir}/{mod}.sites.tsv'):
     f = l.split(); a = int(f[0], 16)
     if f[1] == 'J': jumps += 1; continue
+    if f[1] == 'I': indirects[a] = {int(x, 16) for x in f[2].split(',')}; continue
     if f[1] == 'W': wins.append((a, int(f[2], 16))); sites[a] = 'W'
     elif f[1] == 'C':
         end = int(f[2], 16)
@@ -478,11 +479,15 @@ def _writes(ins):
     _, ww = ins.regs_access()
     return {'x29' if ins.reg_name(r) == 'fp' else 'x30' if ins.reg_name(r) == 'lr' else re.sub(r'^[wx]', 'x', ins.reg_name(r))
             for r in ww if ins.reg_name(r) not in ('sp', 'pc')}
-def _mem_sp(ins, load):
+def _mem_sp(ins, load, old_sp=None):
     if (load and not ins.mnemonic.startswith('ld')) or (not load and not ins.mnemonic.startswith('st')):
         return None
     for op in ins.operands:
-        if op.type == capstone.arm64_const.ARM64_OP_MEM and ins.reg_name(op.mem.base) == 'sp':
+        if op.type != capstone.arm64_const.ARM64_OP_MEM: continue
+        base = ins.reg_name(op.mem.base)
+        if load and old_sp is not None and base == f'x{old_sp}' and op.mem.disp == -16:
+            return -16
+        if base == 'sp':
             if op.mem.disp < 0: return op.mem.disp
             if load and ins.mnemonic == 'ldp' and op.mem.disp == 0: return -16
     return None
@@ -498,10 +503,21 @@ static_entries = [(a, set()) for a in sites]
 for a, b, r, _ in params:
     static_entries.append((a, {f'x{r}'}))
 static_seen = 0
+_bid = open(nso, 'rb').read(0x50)[0x40:0x50].hex()
+sp_anchors = ({0x811950: 10, 0x17d68c0: 10, 0x198a300: 8,
+               0x34b9f4c: 8, 0x34bb7bc: 8, 0x34c0cb8: 8,
+               0x34c2810: 8, 0x34cdb90: 8, 0x34cfa0c: 8}
+              if _bid == '0f1169aa7d0fa4529c861f96adec306e' and mod == 'main' else {})
 for a, allowed in static_entries:
     s = btarget(a)
     if s is None: continue
     block = _block(s); static_seen += 1
+    old_sp = sp_anchors.get(a)
+    if old_sp is not None:
+        original = list(_md.disasm(orig[a - 16:a + 4], a - 16))
+        capture = [i for i, ins in enumerate(original[:-1]) if ins.mnemonic == 'mov' and ins.op_str == f'x{old_sp}, sp']
+        if not capture or any(f'x{old_sp}' in _writes(ins) for ins in original[capture[-1] + 1:-1]):
+            bad(f'动态 SP {a:#x} 没有可靠的旧 SP 寄存器')
     if not allowed:
         end = next((hi for lo, hi in wins if lo == a), a + 4)
         for lo, hi in atomic_groups.get(a, [(a, end)]):
@@ -517,7 +533,7 @@ for a, allowed in static_entries:
             for reg in regs:
                 name = ins.reg_name(reg); name = 'x29' if name == 'fp' else 'x30' if name == 'lr' else re.sub(r'^[wx]', 'x', name)
                 saved.setdefault(name, []).append((d, i))
-        d = _mem_sp(ins, True)
+        d = _mem_sp(ins, True, old_sp)
         if d is not None:
             regs = [op.reg for op in ins.operands[:2] if op.type == capstone.arm64_const.ARM64_OP_REG]
             for reg in regs:
@@ -525,7 +541,7 @@ for a, allowed in static_entries:
                 restored.setdefault(name, []).append((d, i))
     writes = set().union(*(_writes(ins) for ins in block)) if block else set()
     for reg in sorted(writes - allowed):
-        wi = [i for i, ins in enumerate(block) if reg in _writes(ins) and not (i > 0 and _mem_sp(ins, True) is not None)]
+        wi = [i for i, ins in enumerate(block) if reg in _writes(ins) and not (i > 0 and _mem_sp(ins, True, old_sp) is not None)]
         dead = any(ins.mnemonic in ('br', 'blr') and ins.operands and ins.reg_name(ins.operands[0].reg) in (reg, reg[1:]) for ins in block)
         ok = dead or any(sd == rd and si < min(wi, default=10**9) and ri > max(wi, default=-1)
                  for sd, si in saved.get(reg, []) for rd, ri in restored.get(reg, []))
@@ -587,6 +603,7 @@ for a in sorted(_heads):
         while e < TE and W(pat, e) != W(orig, e) and e not in _heads: e += 4
         seg = range(a, e, 4); legal = {a + 4 * k for k in range(1, len(seg) + 1)}
     legal |= {t for o in seg for t in [_bt(W(orig, o), o)] if t is not None}
+    legal |= indirects.get(a, set())
     for t in _exits(btarget(a)):
         nexit += 1
         if t not in legal and a in _cutoff: _cutex.append(f'{a:#x}→{t:#x}'); continue   # 已登记剪口（带理由，故意改控制流）：放行并列出 | Registered cuts (with a reason, deliberately changing control flow): let through and listed

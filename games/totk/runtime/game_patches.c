@@ -7,6 +7,8 @@
 #include <string.h>
 #include <stdatomic.h>
 #include <math.h>
+#include <sys/mman.h>
+#include <libkern/OSCacheControl.h>
 
 /* 60 FPS.
    TOTK's adaptive present-interval controller (main+0x8f6bec, called once per frame from main+0x8f68b4) turns the main
@@ -352,13 +354,174 @@ int runtime_output_mode_cycle(void) {
    and exits: "stop here and show me the state" without a debugger. */
 static void patch_trap(Module *m) {
     const char *e = getenv("TOTK_TRAP_AT");
-    if (CODE_PATCHED_AT_BUILD || !e || !*e) return;
+    const char *target = getenv("TOTK_TRAP_MODULE");
+    if (CODE_PATCHED_AT_BUILD || !e || !*e || (target && strcmp(target, m->name))) return;
+    if (!target && strcmp(m->name, "main")) return;
     uint64_t off = strtoull(e, NULL, 0);
-    if (off & 3 || off + 4 > m->text_end) runtime_fail("TOTK_TRAP_AT must be a 4-byte aligned offset in main's text");
+    if (off & 3 || off + 4 > m->text_end) runtime_fail("TOTK_TRAP_AT must be a 4-byte aligned text offset");
     uint32_t brk = 0xd4200000, was;
     memcpy(&was, m->base + off, 4);
     memcpy(m->base + off, &brk, 4);
-    fprintf(stderr, "[totk] TOTK_TRAP_AT: brk at main+%#llx (was %08x); the game stops there with a register dump\n", (unsigned long long)off, was);
+    fprintf(stderr, "[totk] TOTK_TRAP_AT: brk at %s+%#llx (was %08x); the game stops there with a register dump\n", m->name, (unsigned long long)off, was);
+}
+
+/* Games without the TOTK-specific frame and resolution sites can still use the
+   instruction trap for a one-shot register snapshot. */
+void runtime_game_patch_trap_only(Module *m) {
+    patch_trap(m);
+    if (strcmp(m->name, "main")) return;
+#ifdef CASTLEVANIA_NATIVE_PROBE
+    /* PlatformLocomotion.CanGoTo asks Platform.IsConnectedTo about a platform
+       whose connection reference can be null. Its two null branches lead
+       to the IL2CPP throw at main+0x1bd68a4; a missing connection means the
+       candidate is not traversable. Return false with the original callee's
+       saved registers and stack restored. The private page after main's image
+       is reserved by the loader and is within a direct ARM64 branch. */
+    if (!getenv("TOTK_PLATFORM_NULL_UNPATCHED")) {
+        const uint32_t site=0x1bd68a4, original=0x97a79fc3u;
+        uint32_t was; memcpy(&was,m->base+site,4);
+        if (was!=original) runtime_fail("Castlevania platform null site changed");
+        uint64_t stub=(m->file_size+0x3fffULL)&~0x3fffULL;
+        if (stub+0x4000!=m->size || (int64_t)stub-site>=0x8000000LL || stub<=site)
+            runtime_fail("Castlevania platform return stub outside branch range");
+        static const uint32_t code[]={
+            0x2a1f03e0u, /* mov w0, wzr */
+            0xa9424ff4u, /* ldp x20, x19, [sp, #0x20] */
+            0xf9400bf5u, /* ldr x21, [sp, #0x10] */
+            0xa8c37bfdu, /* ldp x29, x30, [sp], #0x30 */
+            0xd65f03c0u  /* ret */
+        };
+        memcpy(m->base+stub,code,sizeof code);
+        uint32_t branch=0x14000000u|((uint32_t)((stub-site)/4)&0x03ffffffu);
+        memcpy(m->base+site,&branch,4);
+        sys_icache_invalidate(m->base+stub,sizeof code);
+        if (mprotect(m->base+stub,0x4000,PROT_READ|PROT_EXEC)) runtime_fail("Castlevania platform return stub RX");
+        fprintf(stderr,"[castlevania] missing platform connection returns false instead of throwing\n");
+    }
+    /* DrawFullscreenQuadFeedbackInstance can keep updating the death fade
+       after its anchor entity is gone. OnUpdate's existing null branches all
+       converge on this IL2CPP throw. With no entity or material to position,
+       skip that frame's quad update through the function's normal epilogue. */
+    if (!getenv("TOTK_DEATH_QUAD_UNPATCHED")) {
+        const uint32_t site=0x1d15624, original=0x97a2a463u;
+        const uint32_t epilogue=0x1d1560c;
+        uint32_t was; memcpy(&was,m->base+site,4);
+        if (was!=original) runtime_fail("Castlevania death quad null site changed");
+        uint32_t branch=0x14000000u|(((epilogue-site)/4)&0x03ffffffu);
+        memcpy(m->base+site,&branch,4);
+        fprintf(stderr,"[castlevania] skip death fade quad update when anchor data is gone\n");
+    }
+    /* A pathfinding receiver can observe a cleared queue wake event while a
+       scene is being torn down. Pop's managed termination exception is fatal
+       in this native host, so release its monitor and return null instead.
+       The caller then uses its own receiver-cleanup path rather than throwing. */
+    if (getenv("TOTK_PATH_QUEUE_EXPERIMENTAL")) {
+        const uint32_t sites[]={0x21479d8,0x2147a70};
+        const uint32_t original[]={0xb40009c0u,0xb4000500u};
+        const uint32_t caller=0x2146f60, caller_original=0xb40034e0u;
+        const uint64_t page=(m->file_size+0x3fffULL)&~0x3fffULL;
+        const uint32_t entry0=(uint32_t)(page+0x40), entry1=(uint32_t)(page+0x60);
+        const uint32_t null_exit=(uint32_t)(page+0x80);
+        uint32_t was;
+        if (page+0x4000!=m->size || page<=sites[1] || page-sites[0]>=0x8000000ULL)
+            runtime_fail("Castlevania path queue stub outside branch range");
+        for (size_t i=0;i<2;i++) {
+            memcpy(&was,m->base+sites[i],4);
+            if (was!=original[i]) runtime_fail("Castlevania path queue wake event site changed");
+        }
+        memcpy(&was,m->base+caller,4);
+        if (was!=caller_original) runtime_fail("Castlevania path queue caller changed");
+        if (mprotect(m->base+page,0x4000,PROT_READ|PROT_WRITE)) runtime_fail("Castlevania path queue stub RW");
+        const uint32_t entries[2]={entry0,entry1};
+        const uint32_t resume[2]={0x21479e0,0x2147a78};
+        for (size_t i=0;i<2;i++) {
+            const uint32_t code[]={
+                0xb4000000u|(((null_exit-entries[i])/4)<<5), /* cbz x0, null exit */
+                0xaa1f03e1u, /* mov x1, xzr */
+                0x14000000u|(((resume[i]-(entries[i]+8))/4)&0x03ffffffu)
+            };
+            memcpy(m->base+entries[i],code,sizeof code);
+        }
+        const uint32_t code[]={
+            0x52800028u, /* mov w8, #1 */
+            0x3900d668u, /* strb w8, [x19, #0x35] (terminate) */
+            0xf9401260u, /* ldr x0, [x19, #0x20] (monitor) */
+            0xaa1f03e1u, /* mov x1, xzr */
+            0x94000000u|(((0x43b6430u-(null_exit+16))/4)&0x03ffffffu), /* Monitor.Exit */
+            0xaa1f03e0u, /* mov x0, xzr */
+            0x14000000u|(((0x2147aacu-(null_exit+24))/4)&0x03ffffffu) /* Pop epilogue */
+        };
+        memcpy(m->base+null_exit,code,sizeof code);
+        sys_icache_invalidate(m->base+entry0,0x60);
+        if (mprotect(m->base+page,0x4000,PROT_READ|PROT_EXEC)) runtime_fail("Castlevania path queue stub RX");
+        for (size_t i=0;i<2;i++) {
+            uint32_t branch=0x14000000u|(((entries[i]-sites[i])/4)&0x03ffffffu);
+            memcpy(m->base+sites[i],&branch,4);
+        }
+        /* A receiver may instead see terminate=true at entry or after the
+           event wakes. Both paths build the same managed exception. */
+        const uint32_t terminated[]={0x2147ae0,0x2147b50};
+        const uint32_t terminated_original[]={0xf0025580u,0xb9403268u};
+        for (size_t i=0;i<2;i++) {
+            memcpy(&was,m->base+terminated[i],4);
+            if (was!=terminated_original[i]) runtime_fail("Castlevania path queue termination site changed");
+            uint32_t branch=0x14000000u|(((null_exit-terminated[i])/4)&0x03ffffffu);
+            memcpy(m->base+terminated[i],&branch,4);
+        }
+        const uint32_t clean_up=0x21477c0;
+        uint32_t branch=0xb4000000u|(((clean_up-caller)/4)<<5);
+        memcpy(m->base+caller,&branch,4);
+        fprintf(stderr,"[castlevania] exit pathfinding receiver cleanly when queue wake event is gone\n");
+    }
+    if (getenv("TOTK_BOUNDS_TRAP")) {
+        for (size_t i=0;i<sizeof castlevania_bounds_sites/sizeof castlevania_bounds_sites[0];i++) {
+            uint32_t off=castlevania_bounds_sites[i], was, brk=0xd4200000;
+            if (off+4>m->text_end) runtime_fail("Castlevania bounds site outside text");
+            memcpy(&was,m->base+off,4);
+            if ((was&0xff00001f)!=0x54000009) runtime_fail("Castlevania bounds site changed");
+            memcpy(m->base+off,&brk,4);
+        }
+        fprintf(stderr,"[castlevania] conditional bounds traps installed at %zu checks\n",
+                sizeof castlevania_bounds_sites/sizeof castlevania_bounds_sites[0]);
+    }
+    if (getenv("TOTK_NULL_TRAP")) {
+        for (size_t i=0;i<sizeof castlevania_null_sites/sizeof castlevania_null_sites[0];i++) {
+            uint32_t off=castlevania_null_sites[i].off, was, brk=0xd4200000;
+            if (off+4>m->text_end) runtime_fail("Castlevania null site outside text");
+            memcpy(&was,m->base+off,4);
+            if ((was&0xff000000)!=0xb4000000 || (was&31)!=castlevania_null_sites[i].reg)
+                runtime_fail("Castlevania null site changed");
+            memcpy(m->base+off,&brk,4);
+        }
+        fprintf(stderr,"[castlevania] conditional null traps installed at %zu checks\n",
+                sizeof castlevania_null_sites/sizeof castlevania_null_sites[0]);
+    }
+    /* The shipped ui-hud bundle serializes null Image entries (including item 1
+       of HUD_Health_Display's seven-element list). Start calls
+       SetImagesParameters once per entry; skip only a missing entry and let
+       the caller continue with the rest. The original cbz throws instead. */
+    if (!getenv("TOTK_HUD_UNPATCHED")) {
+        const uint32_t site=0x1f73a9c, epilogue=0x1f73e10;
+        uint32_t was, replacement=0xb4000000u|(((epilogue-site)/4)<<5);
+        memcpy(&was,m->base+site,4);
+        if (was!=0xb4001cc0u) runtime_fail("Castlevania HUD null site changed");
+        memcpy(m->base+site,&replacement,4);
+        fprintf(stderr,"[castlevania] skip null serialized HUD Image in SetImagesParameters\n");
+    }
+    /* StopSound clears mVideoPlayer at +0x20. A queued VideoEnded callback can
+       still arrive during the movie-to-scene transition; in the original code
+       its null check throws before the callback can return. At the end of the
+       video there is no player left to unsubscribe, and StopSound has already
+       released the FMOD channel, so return through VideoEnded's epilogue. */
+    if (!getenv("TOTK_FMOD_ENDED_UNPATCHED")) {
+        const uint32_t site=0x1d2a728, epilogue=0x1d2a750;
+        uint32_t was, replacement=0xb4000000u|(((epilogue-site)/4)<<5)|21u;
+        memcpy(&was,m->base+site,4);
+        if (was!=0xb40002f5u) runtime_fail("Castlevania VideoEnded null site changed");
+        memcpy(m->base+site,&replacement,4);
+        fprintf(stderr,"[castlevania] ignore late VideoEnded after StopSound cleared its player\n");
+    }
+#endif
 }
 
 static void check_site(const Module *m, const GamePatch *p) {
