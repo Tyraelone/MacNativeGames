@@ -19,10 +19,12 @@ int main(int argc,char **argv) {
     @autoreleasepool {
         NSString *root=[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"castlevania"];
         NSString *host=[root stringByAppendingPathComponent:@"build/totk-native"];
+        NSString *icon=[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"AppIcon.icns"];
         NSString *images=[root stringByAppendingPathComponent:@"rewritten"];
         NSString *romfs=[root stringByAppendingPathComponent:@"main/romfs"];
         NSString *addons=[root stringByAppendingPathComponent:@"addons"];
-        BOOL present=access(host.fileSystemRepresentation,X_OK)==0
+        BOOL present=access(icon.fileSystemRepresentation,R_OK)==0
+            && access(host.fileSystemRepresentation,X_OK)==0
             && access([images stringByAppendingPathComponent:@"main.patched.bin"].fileSystemRepresentation,R_OK)==0
             && access([images stringByAppendingPathComponent:@"sdk.patched.bin"].fileSystemRepresentation,R_OK)==0
             && access([images stringByAppendingPathComponent:@"subsdk0.patched.bin"].fileSystemRepresentation,R_OK)==0

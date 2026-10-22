@@ -6,6 +6,7 @@ import os
 import plistlib
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -22,6 +23,21 @@ def checked(path, expected=None):
         return verified_file(path, expected)
     except ValueError as error:
         raise SystemExit(str(error)) from None
+
+
+def build_icon(source: Path, destination: Path, work: Path) -> None:
+    """Build the macOS icon from the tracked square artwork outside the source tree."""
+    checked(source)
+    with tempfile.TemporaryDirectory(prefix="castlevania-icon-", dir=work) as temporary:
+        iconset = Path(temporary) / "AppIcon.iconset"
+        iconset.mkdir()
+        for size in (16, 32, 128, 256, 512):
+            for scale in (1, 2):
+                name = f"icon_{size}x{size}{'@2x' if scale == 2 else ''}.png"
+                subprocess.run(["sips", "-s", "format", "png", "-z", str(size * scale),
+                                str(size * scale), str(source), "--out", str(iconset / name)],
+                               check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["iconutil", "-c", "icns", "-o", str(destination), str(iconset)], check=True)
 
 
 def main():
@@ -93,6 +109,7 @@ def main():
     resources = tmp / "Contents/Resources/castlevania"
     for rel, path in files.items():
         clone(path, resources / rel)
+    build_icon(REPO / "games/castlevania/assets/app-icon.png", tmp / "Contents/Resources/AppIcon.icns", work)
     for title in TITLE_IDS:
         index = json.loads((work / "main/addons-verified" / title / "index.json").read_text())
         if index.get("status") != "pass" or index.get("romfs_sha256") != DLC_SHA256 or index.get("files") != [{"path": "VENOM", "offset": 512, "size": 322}]:
@@ -125,6 +142,7 @@ def main():
         "CFBundleDevelopmentRegion": "zh_CN", "CFBundleExecutable": "Castlevania",
         "CFBundleIdentifier": "org.macnativegames.castlevania.belmonts-curse",
         "CFBundleName": "Castlevania Belmont's Curse", "CFBundleDisplayName": "恶魔城：贝尔蒙特的诅咒",
+        "CFBundleIconFile": "AppIcon",
         "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "1.1.0",
         "CFBundleVersion": "1", "LSMinimumSystemVersion": "26.0",
         "NSHighResolutionCapable": True, "LSApplicationCategoryType": "public.app-category.action-games",

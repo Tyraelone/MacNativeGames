@@ -70,6 +70,12 @@ python3 games/castlevania/build_app.py \
 
 验收新包后，将旧正式 App 移入项目外 `development`，再把新包移到稳定路径 `apps/恶魔城：贝尔蒙特的诅咒.app`；桌面唯一入口直接链接到该稳定路径。正式启动不设置 `TOTK_GAMEPAD_DISABLE`，玩家存档保留在 `~/Library/Application Support/MacNativeGames/Castlevania`。本轮外部 `build-gamepad-20261022.log` 是打包记录；提交前复验了正式包清单中 791 个文件的 SHA-256、深度签名和 `--check`，Python 合成测试 55 项、RomFS 路径检查 27 项以及虚拟核心线程探针也全部通过。测试日志分别在外部 `test-full-20261022.log` 和 `native-host/thread-probe-release-run-20261022.log`；这些文件没有复制进源码目录。
 
+### 图标与应用程序目录（2026-10-22）
+
+图标源图在 `games/castlevania/assets/app-icon.png`，生成提示词及来源记在同目录的 `README.md`。`build_app.py` 在项目外用 `sips` 生成标准尺寸图，再由 `iconutil` 制作 `AppIcon.icns`；启动器的 `--check` 同时检查图标文件。带图标的正式包已安装在 `/Applications/恶魔城：贝尔蒙特的诅咒.app`，桌面唯一入口现在直接指向该位置。加图标前的正式包保留于外部 `development/恶魔城：贝尔蒙特的诅咒-加图标前-20261022.app`。本轮打包日志为外部 `build-icon-app-20261022.log`；迁移后深度签名、`--check`、图标格式与 791 个包内文件的清单哈希均通过，从 `/Applications` 启动的日志为 `castlevania-20261022-120040-81399.log`。
+
+活跃测试环境已清理：原 `~/Library/Application Support/MacNativeGames/Castlevania/tests` 和五个测试版 App 移到项目外 `~/Downloads/Castlevania_build/archive/2026-10-22/`，可按原目录名找回。前文引用的隔离测试路径均是归档前的位置。正式存档仍在用户数据目录的 `profile` 下，历史构建日志和旧正式包也仍保留在项目外。
+
 怪物出现时原日志有 539 ms 长帧，其中约 527 ms 在提交与出图，同帧首次创建 6 个着色器库和 4 条管线。外部 `main/shader-seed-extended-20261021` 汇总实玩缓存中的 335 个着色器和 599 条管线记录；测试版 3 的隔离运行日志 `castlevania-20261021-233645-37213.log` 在已走过的关卡段没有运行中编译着色器或管线的长帧。然而同一日志仍有最高 452 ms 的非编译长帧，GPU 与提交耗时均很低，因此刷怪帧时间问题尚未全部解决。所有预热包、测试 App、存档副本及截图均保留在项目外的 `~/Downloads/Castlevania_build` 或用户数据目录的 `tests` 子目录。
 
 ## 虚拟核心停滞与后续帧时间调查（2026-10-22）
