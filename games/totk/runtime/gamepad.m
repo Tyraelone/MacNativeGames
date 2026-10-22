@@ -81,6 +81,11 @@ static void attach_gamepad(GCController *controller) {
 void runtime_gamepad_start(void) {
     if (started) return;
     started = YES;
+    /* Keep an isolated replay independent of a controller being used nearby. */
+    if (getenv("TOTK_GAMEPAD_DISABLE")) {
+        fprintf(stderr, "[totk-input] native gamepad disabled for diagnostics\n");
+        return;
+    }
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
     [center addObserverForName:GCControllerDidConnectNotification object:nil queue:NSOperationQueue.mainQueue
                    usingBlock:^(NSNotification *notification) { attach_gamepad(notification.object); }];

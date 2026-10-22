@@ -73,7 +73,7 @@
 
 ## 源码组织
 
-- `native-preview.patch` 是应用于 `games/totk` **副本**的实验宿主适配。它包含旧版 SDK 启动 ABI、部分 IPC、VI、HID、音频、FFmpeg 影片解码及分段显存池适配；移除了 TOTK 专属游戏补丁，改用带原指令保护的卡比分辨率与内存预算适配。实验逻辑尚未达到发布质量。打包脚本会将构建所用的 Homebrew 动态库和许可文件收进预览 App。
+- `native-preview.patch` 是应用于固定宿主源码提交 `f5cc1519c5c6aed8b21c20317a9cee15f3f6d746` 的 `games/totk` **项目外副本**的实验适配。后续宿主已改变多个相同文件，不能对当前 `HEAD` 直接套用此补丁。它包含旧版 SDK 启动 ABI、部分 IPC、VI、HID、音频、FFmpeg 影片解码及分段显存池适配；移除了 TOTK 专属游戏补丁，改用带原指令保护的卡比分辨率与内存预算适配。实验逻辑尚未达到发布质量。打包脚本会将构建所用的 Homebrew 动态库和许可文件收进预览 App。
 - `patch_sdk.py` 仅针对已验证的基础版 SDK 重写镜像，替换五个会因缺少 Switch HID 共享内存而中断的读取入口。它返回空状态，用于启动探针，不是完整输入实现。
 - 通用容器提取和带 build ID 保护的模块重写改动保留在原有提取器与 D2R 重写器中。
 
@@ -88,7 +88,7 @@ kirby_repo="$(git rev-parse --show-toplevel)"
 kirby_work="/path/outside-repository/Kirby_build"
 kirby_host="$kirby_work/host"
 mkdir -p "$kirby_host"
-git archive HEAD games/totk | tar -x -C "$kirby_host" --strip-components=2
+git archive f5cc1519c5c6aed8b21c20317a9cee15f3f6d746 games/totk | tar -x -C "$kirby_host" --strip-components=2
 git -C "$kirby_host" apply --check -p1 "$kirby_repo/games/kirby/native-preview.patch"
 git -C "$kirby_host" apply -p1 "$kirby_repo/games/kirby/native-preview.patch"
 ```

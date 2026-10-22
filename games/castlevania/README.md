@@ -53,4 +53,31 @@
 
 玩家日志 `castlevania-20261021-230415-28569.log` 在死亡时进入 `DrawFullscreenQuadAnchorToEntity.OnUpdate` 的空引用异常。恶魔城专用补丁让已失去锚定实体的全屏淡出绘制跳过该次更新；隔离运行不再出现原地址，但随后进入 `Pathfinding.ThreadControlQueue.Pop` 的托管异常。寻路线程的无异常退出补丁尚未通过死亡复验，已改为仅在 `TOTK_PATH_QUEUE_EXPERIMENTAL=1` 时启用。测试版 4 和外部日志 `castlevania-20261021-234823-40129.log`、`castlevania-20261021-235108-40543.log`、`castlevania-20261021-235304-40852.log` 均不能作为死亡问题已修复的证据；正式 App 尚未替换。较新的测试存档还出现关卡状态载入空引用或停滞，需独立排查。玩家原存档未改动。
 
+后续死亡复现日志 `castlevania-20261022-111008-71261.log` 的 `main+0x2147b10` 对应 `Pathfinding.ThreadControlQueue.Pop` 抛出 `QueueTerminationException` 后的返回地址。场景关闭时 `TerminateReceivers` 已设置终止标志并唤醒接收线程；两个终止分支当时均持有队列监视器。当前恶魔城补丁只处理这两个分支：退出监视器、从 `Pop` 返回空值，让 `CalculatePathsThreaded` 走已有的接收线程清理路径；未改动无证据指向的空唤醒事件分支。隔离存档 `~/Library/Application Support/MacNativeGames/Castlevania/tests/death-crash-20261022` 从玩家原档复制后独立运行，日志 `castlevania-20261022-112004-72998.log` 记录修复启用、继续游戏进入关卡且未再出现 `Break`；隔离存档的上次死亡位置由 x=-218.988 变为 x=-236.736，说明本轮确实发生了新一次死亡。玩家随后报告“看起来死亡闪退已经修复了”。诊断进程设置了 `TOTK_GAMEPAD_DISABLE=1` 以避免脚本受到手柄干扰；正式打包不设置此变量。外部打包日志 `build-gamepad-20261022.log` 记录新包的签名及 `--check` 结果。
+
+正式包已更新到外部 `~/Downloads/Castlevania_build/apps/恶魔城：贝尔蒙特的诅咒.app`，前一正式版保存在外部 `development/恶魔城：贝尔蒙特的诅咒-死亡闪退修复前-20261022.app`；桌面唯一恶魔城入口直接指向新版。新包可执行文件与已验证测试版的 SHA-256 均为 `1b686c06e48b15ec6ebb6f08e94e839f13c1948d9355982627670bc56d3a79de`。从正式路径启动的 `castlevania-20261022-113234-75850.log` 记录 `native gamepad connected: DualSense Wireless Controller (DualSense)`；新包的深度签名和 `--check` 均通过。
+
+### 正式版打包与替换
+
+本机验证过的 1.1.0 输入镜像、两份 DLC、改写模块和着色器种子位于项目外的 `~/Downloads/Castlevania_build`。先按 `games/totk/requirements.txt` 安装 Python 依赖，将当前 `games/totk` 宿主源码复制到该目录下的 `native-host` 并编译 `build/totk-native`；编译时指定 `NATIVE_OPT='-O1 -DCASTLEVANIA_NATIVE_PROBE=1'`。`games/castlevania/build_app.py` 随后核对游戏和 DLC 的已知哈希、着色器种子清单及各输入文件，组装 App、签名并执行 `--check`。本轮使用的命令是：
+
+```sh
+python3 games/castlevania/build_app.py \
+  --work "$HOME/Downloads/Castlevania_build" \
+  --shader-seed "$HOME/Downloads/Castlevania_build/main/shader-seed-masked-20261021" \
+  --out "$HOME/Downloads/Castlevania_build/apps/恶魔城：贝尔蒙特的诅咒-手柄可用-20261022.app"
+```
+
+验收新包后，将旧正式 App 移入项目外 `development`，再把新包移到稳定路径 `apps/恶魔城：贝尔蒙特的诅咒.app`；桌面唯一入口直接链接到该稳定路径。正式启动不设置 `TOTK_GAMEPAD_DISABLE`，玩家存档保留在 `~/Library/Application Support/MacNativeGames/Castlevania`。本轮外部 `build-gamepad-20261022.log` 是打包记录；提交前复验了正式包清单中 791 个文件的 SHA-256、深度签名和 `--check`，Python 合成测试 55 项、RomFS 路径检查 27 项以及虚拟核心线程探针也全部通过。测试日志分别在外部 `test-full-20261022.log` 和 `native-host/thread-probe-release-run-20261022.log`；这些文件没有复制进源码目录。
+
 怪物出现时原日志有 539 ms 长帧，其中约 527 ms 在提交与出图，同帧首次创建 6 个着色器库和 4 条管线。外部 `main/shader-seed-extended-20261021` 汇总实玩缓存中的 335 个着色器和 599 条管线记录；测试版 3 的隔离运行日志 `castlevania-20261021-233645-37213.log` 在已走过的关卡段没有运行中编译着色器或管线的长帧。然而同一日志仍有最高 452 ms 的非编译长帧，GPU 与提交耗时均很低，因此刷怪帧时间问题尚未全部解决。所有预热包、测试 App、存档副本及截图均保留在项目外的 `~/Downloads/Castlevania_build` 或用户数据目录的 `tests` 子目录。
+
+## 虚拟核心停滞与后续帧时间调查（2026-10-22）
+
+上一轮测试日志 `castlevania-20261021-235304-40852.log` 的线程快照显示，客体主线程在 `h_nvnWindowAcquireTexture` 返回前等待 `core_take`，同时三个虚拟核心均空闲、主线程没有登记在核心等待队列。检查调度器发现：等待者获得核心后若恰好被 `SetThreadActivity(Paused)` 暂停，会释放已获核心，但原循环不会重新入队；另一个路径中，暂停的等待者恢复时，即便允许的核心已经空闲，也可能继续等待未来的释放事件。`threads.c` 现在记录等待队列成员资格，恢复时重新检查空闲核心，被暂停后释放分配则重新入队。独立 `thread_probe` 新增“暂停等待者、释放它需要的核心、恢复等待者”的确定性场景：旧实现报 `FAIL resumed waiter acquired idle core`，新实现通过。此修复位于通用虚拟核心调度器，不依赖恶魔城专用补丁。
+
+外部测试 App 5 `apps/恶魔城：贝尔蒙特的诅咒-核心调度修复测试版5.app` 使用隔离档 `~/Library/Application Support/MacNativeGames/Castlevania/tests/core-scheduler-fix-20261022` 启动。`castlevania-20261022-102924-64608.log` 记录标题、序章、对话后进入关卡；外部 `native-host/core-scheduler-fix-20261022/right-5s.png`、`right-15s.png` 和 `current.png` 留有实际游玩窗口图。进程运行至 37,800 帧后按诊断 `close` 正常退出，没有出现原核心停滞或 SDK `Break`。本次没有触发死亡场景，不能据此宣布死亡异常已解决；正式 App 未替换。
+
+较新存档点击“继续游戏”的 `Break` 见 `castlevania-20261022-105714-68802.log`：IL2CPP 调用链是 `MainMenu.LoadLevel` → `LevelManager.TryLoadLevelState` → `MainMenu.BeforeLoadGameState` → `GameStateManager.PopState`。原生指令在状态栈为空且 ID 不为 -1，或栈顶 ID 与请求值不一致时主动构造异常；此处的返回地址 `main+0x1d4cbd0` 对应抛出分支。仅将菜单退出回调从按旧 ID 强制 `PopState` 改为按 `menuGameState` 调用游戏自带的 `TryPopState`：菜单仍在栈顶时正常弹出，若另一状态已先切换则返回 false，不再由这条回调抛异常。隔离副本 `~/Library/Application Support/MacNativeGames/Castlevania/tests/continue-crash-20261022` 初建时与原档 SHA-256 同为 `cc259b9fd380a3872f69be7a3b4be260eb6b1afb8e7d08554cebaa6a2a4a08fd`；验证游玩后测试档已变化，原档未被调试运行写入。单次续读和连续三次确认均进入关卡，窗口证据为该目录下的 `patched-gameplay.png`，没有再出现 `Break`。原始单次闪退的精确输入时序尚未复现，故此修复针对已定位的异常路径，仍需用用户手柄实际验证。诊断运行可设置共享的 `TOTK_GAMEPAD_DISABLE=1`，避免真实手柄输入干扰脚本，正常运行不设置。
+
+这次开启的外部逐帧表 `native-host/core-scheduler-fix-20261022/frames.tsv` 显示非编译长帧至少有两类：第 11,020 帧整帧 319.1 ms，出图线程 CPU 6.1 ms、全进程 CPU 386.4 ms，NVN 2.7 ms、GPU 2.0 ms；第 26,984 帧整帧 469.3 ms，出图线程 CPU 403.9 ms、全进程 CPU 701.6 ms，NVN 1.6 ms、GPU 5.7 ms。前者表明等待期间其他线程忙，后者表明出图线程自身执行大量 CPU 工作；具体客体调用链仍需进一步采样。`@late_ms` 在等待期结束早于目标时曾发生无符号下溢，图形计时现将其截为零；这是诊断数据修正，不影响实际帧节奏。

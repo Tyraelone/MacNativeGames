@@ -1,43 +1,27 @@
 #!/usr/bin/env python3
 """Assemble the verified Castlevania 1.1.0 native main game outside this source tree."""
 import argparse
-import hashlib
 import json
 import os
 import plistlib
-import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(REPO))
+from packaging_common import clone_file as clone, outside_repository, sha256_file as digest, verified_file
 ROMFS_SHA256 = "2ba74cc0e68efc9202880b6ea92d2e9cc5193069a7bbc17e85d1ffb68fa77247"
 DLC_SHA256 = "853d89ef4aad9f627401c79d2cb12c6533dced4247f3f2202f94f4c6a7a2ba05"
 TITLE_IDS = ("0100BA4026E95001", "0100BA4026E95002")
 
 
-def digest(path):
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        while chunk := f.read(8 << 20):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def checked(path, expected=None):
-    if not path.is_file() or path.is_symlink():
-        raise SystemExit(f"Missing regular input: {path}")
-    actual = digest(path)
-    if expected and actual != expected:
-        raise SystemExit(f"SHA-256 mismatch: {path}: {actual}")
-    return actual
-
-
-def clone(source, target):
-    target.parent.mkdir(parents=True, exist_ok=True)
     try:
-        subprocess.run(["cp", "-c", str(source), str(target)], check=True, capture_output=True)
-    except subprocess.CalledProcessError:
-        shutil.copy2(source, target)
+        return verified_file(path, expected)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
 
 
 def main():
@@ -46,9 +30,12 @@ def main():
     p.add_argument("--out", type=Path, required=True, help="external .app path")
     p.add_argument("--shader-seed", type=Path, help="external prepared gameplay shader seed")
     args = p.parse_args()
-    work, out = args.work.expanduser().resolve(), args.out.expanduser().absolute()
-    if out.suffix != ".app" or out.is_relative_to(REPO) or work.is_relative_to(REPO):
-        raise SystemExit("Work and .app output must be outside the source project")
+    try:
+        work, out = outside_repository(args.work, REPO), outside_repository(args.out, REPO)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
+    if out.suffix != ".app":
+        raise SystemExit("App output must end in .app")
     if out.exists():
         raise SystemExit(f"Output already exists; preserving it: {out}")
     source = work / "main/update"
@@ -75,8 +62,13 @@ def main():
         files[f"addons/{title}/index.json"] = folder / "index.json"
     seed_count = 0
     if args.shader_seed:
-        seed = args.shader_seed.expanduser().resolve()
-        if seed.is_relative_to(REPO) or not seed.is_dir() or seed.is_symlink():
+        if args.shader_seed.is_symlink():
+            raise SystemExit("Shader seed must be a regular directory outside the source project")
+        try:
+            seed = outside_repository(args.shader_seed, REPO)
+        except ValueError as error:
+            raise SystemExit(str(error)) from None
+        if not seed.is_dir():
             raise SystemExit("Shader seed must be a regular directory outside the source project")
         seed_manifest = json.loads((seed / "seed-manifest.json").read_text())
         if (seed_manifest.get("schema") != 1 or seed_manifest.get("chain") != "totk-native-v4-unverified"

@@ -153,6 +153,8 @@ Language: the game and the launcher's own text (startup screen, shader warm-up p
 
 See [docs/how-it-works.md](docs/how-it-works.md).
 
+The shared and game-specific lessons from all three ports are in [porting lessons](docs/porting-lessons.md).
+
 Recorded performance experiments, remaining work and comparison methods: [Mac performance follow-ups](docs/performance-followups.md).
 
 ## Acknowledgements
@@ -320,6 +322,8 @@ macOS 能识别的手柄（如 DualSense、Xbox 手柄）会映射为 Switch Pro
 - 47 项自动测试覆盖生成的容器 / 更新样本、重定位格式、工作目录隔离、打包、桌面入口迁移、着色器提取、首次导入的缓存保留、27 个原生 RomFS 路径用例，以及卡比的语言选择、快捷键状态、带原值保护的帧节拍、派生着色器方向和 GPU 保活策略。GitHub Actions 已配置为运行源码测试和路径解析器内存检查，不需要游戏数据或密钥；另使用本地 XCI 构造、附带生成通用票据的 NSP 测试副本完成完整 Mac 打包。尚未验证独立的零售本体 NSP，也未测试从该类输入构建后的实际游玩。
 
 ## 工作原理
+
+三款游戏的共用流程、定制边界与验证经验见[移植经验总结](docs/porting-lessons.md)。
 
 见 [docs/how-it-works.md](docs/how-it-works.md)。
 

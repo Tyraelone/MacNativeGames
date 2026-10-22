@@ -8,6 +8,13 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+KIRBY_HOST_BASE = 'f5cc1519c5c6aed8b21c20317a9cee15f3f6d746'
+
+
+def pinned_game_patches(destination):
+    source = subprocess.check_output(
+        ['git', 'show', f'{KIRBY_HOST_BASE}:games/totk/runtime/game_patches.c'], cwd=ROOT)
+    destination.write_bytes(source)
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('clang'), 'macOS native runtime')
@@ -16,7 +23,8 @@ class KirbyShortcutsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='kirby-shortcuts-') as tmp:
             work = Path(tmp)
             (work / 'runtime').mkdir()
-            for name in ('game_patches.c', 'game_patches.h', 'runtime.h'):
+            pinned_game_patches(work / 'runtime/game_patches.c')
+            for name in ('game_patches.h', 'runtime.h'):
                 shutil.copy2(ROOT / 'games/totk/runtime' / name, work / 'runtime' / name)
             subprocess.run(['git', 'apply', '--include=runtime/game_patches.c',
                             str(ROOT / 'games/kirby/native-preview.patch')], cwd=work, check=True)
@@ -82,7 +90,8 @@ int main(void) {
         with tempfile.TemporaryDirectory(prefix='kirby-pacer-') as tmp:
             work = Path(tmp)
             (work / 'runtime').mkdir()
-            for name in ('game_patches.c', 'game_patches.h', 'runtime.h'):
+            pinned_game_patches(work / 'runtime/game_patches.c')
+            for name in ('game_patches.h', 'runtime.h'):
                 shutil.copy2(ROOT / 'games/totk/runtime' / name, work / 'runtime' / name)
             subprocess.run(['git', 'apply', '--include=runtime/game_patches.c',
                             str(ROOT / 'games/kirby/native-preview.patch')], cwd=work, check=True)

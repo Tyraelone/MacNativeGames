@@ -26,8 +26,10 @@ Needs: macOS 26 or later on Apple silicon, the Xcode command line tools, Homebre
 Optional: Xcode's Metal toolchain (xcodebuild -downloadComponent MetalToolchain) compiles the startup shaders into the
 app, so moving or rebuilding it does not repeat that work at launch.
 """
-import argparse, concurrent.futures, hashlib, json, os, platform, shutil, subprocess, sys, threading, time
+import argparse, concurrent.futures, json, os, platform, shutil, subprocess, sys, threading, time
 from pathlib import Path
+sys.dont_write_bytecode = True
+from packaging_common import clone_file, outside_repository, sha256_file
 
 REPO = Path(__file__).resolve().parent
 GAME = REPO / 'games/totk'
@@ -80,12 +82,7 @@ def run(cmd, log, cwd=None, env=None, quiet=True):
                          f'full output: {log}\n' + '\n'.join(tail))
 
 
-def sha256(path):
-    h = hashlib.sha256()
-    with open(path, 'rb') as f:
-        while chunk := f.read(8 << 20):
-            h.update(chunk)
-    return h.hexdigest()
+sha256 = sha256_file
 
 
 def check(what, got, want):
@@ -590,11 +587,7 @@ def step_binary(tree, game, keys, env, logs, *, version="v0"):
             say(f'   no app icon, the app gets the default one ({str(e).splitlines()[0]})')
 
 
-def clone(src, dst):
-    """APFS clone when on the same volume (no extra space), else a copy."""
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if subprocess.run(['cp', '-c', src, dst], capture_output=True).returncode:
-        shutil.copy2(src, dst)
+clone = clone_file
 
 
 def copy_tree(src, dst):
@@ -692,8 +685,11 @@ def main(argv):
         raise BuildError(f'no such file: {game}')
     if not keys.is_file():
         raise BuildError(f'no such file: {keys}')
-    out = (args.out.expanduser().resolve() if args.out else game.parent / f'{APP_NAME}.app')
-    work = (args.work.expanduser().resolve() if args.work else game.parent / 'TOTK_build')
+    try:
+        out = outside_repository(args.out if args.out else game.parent / f'{APP_NAME}.app', REPO)
+        work = outside_repository(args.work if args.work else game.parent / 'TOTK_build', REPO)
+    except ValueError as error:
+        raise BuildError(str(error)) from None
     if out.suffix != '.app':
         raise BuildError(f'the output must end in .app: {out}')
     kind = input_kind(game)

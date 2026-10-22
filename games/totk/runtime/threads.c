@@ -72,7 +72,7 @@ typedef struct thr {
     uint32_t qos;
     int cur_core;              // virtual core held while running guest code, -1 while blocked / not started
     int preempt;               // a higher-priority thread waits for this thread's core
-    uint64_t cseq, core_since; struct thr *cnext;
+    uint64_t cseq, core_since; struct thr *cnext; int core_waiting;
     uint32_t wh[4]; int nwh;   // handles of the current WaitSynchronization (state dump)
     int last_hle;              // 1 + wrapper index of the last host call made while "hletrace" was on (state dump)
 } thr_t;
@@ -151,23 +151,36 @@ static void core_grant(int c) {   // holding G: give free core c to the best wai
     for (thr_t **p = &g_core_wait; *p; p = &(*p)->cnext)
         if (!(*p)->suspended && core_allowed(*p, c) && (!b || (*p)->prio < b->prio || ((*p)->prio == b->prio && (*p)->cseq < b->cseq))) { b = *p; bp = p; }
     if (!b) return;
-    *bp = b->cnext; b->cnext = NULL; b->cur_core = c; b->core_since = now_ns(); g_core_owner[c] = b; pthread_cond_signal(&b->cv);
+    *bp = b->cnext; b->cnext = NULL; b->core_waiting = 0;
+    b->cur_core = c; b->core_since = now_ns(); g_core_owner[c] = b; pthread_cond_signal(&b->cv);
 }
 static void core_put(thr_t *t) {   // holding G
     if (t->cur_core < 0) return;
     int c = t->cur_core; t->cur_core = -1; t->preempt = 0; g_core_owner[c] = NULL; core_grant(c);
 }
 static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask is handed over
-    while(t->suspended) pthread_cond_wait(&t->cv,&G);
-    if (!cores_enabled() || t->cur_core >= 0) return;
+    if (!cores_enabled()) { while (t->suspended) pthread_cond_wait(&t->cv, &G); return; }
     if (!(t->mask & ((1u << NCORE) - 1))) die("thread %#x core mask %#llx has no application core", t->handle, (unsigned long long)t->mask);
-    int c = t->core >= 0 && t->core < NCORE && core_allowed(t, t->core) && !g_core_owner[t->core] ? t->core : -1;
-    for (int i = 0; c < 0 && i < NCORE; i++) if (core_allowed(t, i) && !g_core_owner[i]) c = i;
-    if (c >= 0) { t->cur_core = c; t->core_since = now_ns(); g_core_owner[c] = t; return; }
-    t->cseq = ++g_wseq; t->cnext = g_core_wait; g_core_wait = t;
-    for (int i = 0; i < NCORE; i++) if (core_allowed(t, i) && g_core_owner[i] && g_core_owner[i]->prio > t->prio) g_core_owner[i]->preempt = 1;
-    while (t->cur_core < 0 || t->suspended) {
-        if (t->cur_core >= 0 && t->suspended) core_put(t);
+    for (;;) {
+        if (t->cur_core >= 0) {
+            if (!t->suspended) return;
+            /* A grant can race with SetThreadActivity(Paused). Releasing that
+               grant removes us from the wait list, so we must enqueue again
+               after the thread is resumed. */
+            core_put(t);
+        }
+        if (!t->suspended) {
+            if (!t->core_waiting) {
+                t->cseq = ++g_wseq; t->cnext = g_core_wait; g_core_wait = t; t->core_waiting = 1;
+            }
+            /* Resume can leave a waiter queued while every eligible core is
+               idle. Grant now instead of relying on a future core_put. */
+            for (int i = 0; i < NCORE; i++) if (!g_core_owner[i]) core_grant(i);
+            if (t->cur_core >= 0) return;
+            for (int i = 0; i < NCORE; i++)
+                if (core_allowed(t, i) && g_core_owner[i] && g_core_owner[i]->prio > t->prio)
+                    g_core_owner[i]->preempt = 1;
+        }
         pthread_cond_wait(&t->cv, &G);
     }
 }

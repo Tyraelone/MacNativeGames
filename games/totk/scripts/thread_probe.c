@@ -1,6 +1,7 @@
 /* Host-thread and kernel synchronization tests, using the production dispatcher. */
 #include "../runtime/runtime.h"
 #include <stdatomic.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
@@ -8,6 +9,7 @@
 #include <unistd.h>
 static atomic_uint calls,environments;
 static atomic_uint pause_calls, pause_stop;
+static atomic_uint blocker_started, blocker_stop, resumed_waiter_ran;
 _Noreturn void runtime_fail(const char *message){fprintf(stderr,"FAIL %s\n",message);exit(1);}
 void *runtime_symbol(const char *name){(void)name;runtime_fail("unexpected guest symbol");}
 void runtime_thread_init(void){atomic_fetch_add(&environments,1);}
@@ -22,6 +24,15 @@ static void pause_child(uint64_t arg){
   uint64_t r[31]={1000000};kernel(0x0b,r);
  }
  uint64_t r[31]={0};kernel(0x0a,r);runtime_fail("paused child ExitThread returned");
+}
+static void core_blocker(uint64_t arg){
+ (void)arg;atomic_store(&blocker_started,1);
+ while(!atomic_load(&blocker_stop)) sched_yield();
+ uint64_t r[31]={0};kernel(0x0a,r);runtime_fail("core blocker ExitThread returned");
+}
+static void core_waiter(uint64_t arg){
+ (void)arg;atomic_store(&resumed_waiter_ran,1);
+ uint64_t r[31]={0};kernel(0x0a,r);runtime_fail("core waiter ExitThread returned");
 }
 int main(void){
  uint32_t main=svc_thread_main_init();uint64_t r[31]={0};r[1]=main;kernel(0xc,r);need(r[0]==0&&r[1]==44,"initial priority");
@@ -54,5 +65,29 @@ int main(void){
  r[0]=pause_thread;r[1]=0;kernel(0x32,r);need(!r[0],"resume thread activity");
  atomic_store(&pause_stop,1);r[1]=(uintptr_t)&pause_thread;r[2]=1;r[3]=1000000000;kernel(0x18,r);need(!r[0],"resumed thread exited");
  r[0]=pause_thread;kernel(0x16,r);need(!r[0],"close paused thread");need(munmap(pause_stack,2<<20)==0,"reclaim pause guest stack");
+ /* A paused waiter can be the only user of a virtual core. Resume must
+    notice that the core is already free, even without a future core_put. */
+ r[0]=main;r[1]=1;r[2]=2;kernel(0x0f,r);need(!r[0],"move main to core 1");
+ uint8_t *block_stack=mmap(NULL,2<<20,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
+ uint8_t *wait_stack=mmap(NULL,2<<20,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
+ need(block_stack!=MAP_FAILED&&wait_stack!=MAP_FAILED,"core wait probe stacks");
+ r[1]=(uintptr_t)core_blocker;r[2]=0;r[3]=(uintptr_t)block_stack+(2<<20);r[4]=44;r[5]=0;
+ kernel(8,r);need(!r[0],"create core blocker");uint32_t blocker=(uint32_t)r[1];
+ r[0]=blocker;kernel(9,r);need(!r[0],"start core blocker");
+ for(int i=0;i<1000&&!atomic_load(&blocker_started);i++)usleep(1000);
+ need(atomic_load(&blocker_started),"core blocker ran");
+ r[1]=(uintptr_t)core_waiter;r[2]=0;r[3]=(uintptr_t)wait_stack+(2<<20);r[4]=44;r[5]=0;
+ kernel(8,r);need(!r[0],"create core waiter");uint32_t waiter=(uint32_t)r[1];
+ r[0]=waiter;kernel(9,r);need(!r[0],"start core waiter");
+ usleep(20000);need(!atomic_load(&resumed_waiter_ran),"waiter blocked on occupied core");
+ r[0]=waiter;r[1]=1;kernel(0x32,r);need(!r[0],"pause queued core waiter");
+ atomic_store(&blocker_stop,1);r[1]=(uintptr_t)&blocker;r[2]=1;r[3]=1000000000;
+ kernel(0x18,r);need(!r[0],"core blocker exited");
+ r[0]=waiter;r[1]=0;kernel(0x32,r);need(!r[0],"resume queued core waiter");
+ r[1]=(uintptr_t)&waiter;r[2]=1;r[3]=1000000000;kernel(0x18,r);
+ need(!r[0]&&atomic_load(&resumed_waiter_ran),"resumed waiter acquired idle core");
+ r[0]=waiter;kernel(0x16,r);need(!r[0],"close core waiter");
+ r[0]=blocker;kernel(0x16,r);need(!r[0],"close core blocker");
+ need(!munmap(block_stack,2<<20)&&!munmap(wait_stack,2<<20),"reclaim core probe stacks");
  printf("{\"status\":\"pass\",\"native_threads\":%u,\"events\":%u,\"scope\":\"production SVC dispatcher, host stack switching, event/thread waits, priority and invalid handles\"}\n",count,count);return 0;
 }

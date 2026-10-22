@@ -371,6 +371,25 @@ void runtime_game_patch_trap_only(Module *m) {
     patch_trap(m);
     if (strcmp(m->name, "main")) return;
 #ifdef CASTLEVANIA_NATIVE_PROBE
+    /* MainMenu.BeforeLoadGameState normally removes its own menu state just
+       before a level load. A second transition can change the stack top
+       first; PopState(id) then throws, aborting Continue. TryPopState(state)
+       performs the same pop when the menu is active and returns false when
+       another state is active. Limit this guard to the menu callback. */
+    if (!getenv("TOTK_MAINMENU_POP_UNPATCHED")) {
+        const uint32_t state_site=0x1f11178, call_site=0x1f11190;
+        const uint32_t state_original=0xb940a661u, call_original=0x17f8ee00u;
+        const uint32_t state_replacement=0xf9401a61u; /* ldr x1, [x19, #0x30] (menuGameState) */
+        const uint32_t call_replacement=0x14000000u|(((0x1d4dd40u-call_site)/4)&0x03ffffffu);
+        uint32_t was;
+        memcpy(&was,m->base+state_site,4);
+        if (was!=state_original) runtime_fail("Castlevania menu state load site changed");
+        memcpy(&was,m->base+call_site,4);
+        if (was!=call_original) runtime_fail("Castlevania menu state pop site changed");
+        memcpy(m->base+state_site,&state_replacement,4);
+        memcpy(m->base+call_site,&call_replacement,4);
+        fprintf(stderr,"[castlevania] remove menu state only when it is active before level load\n");
+    }
     /* PlatformLocomotion.CanGoTo asks Platform.IsConnectedTo about a platform
        whose connection reference can be null. Its two null branches lead
        to the IL2CPP throw at main+0x1bd68a4; a missing connection means the
@@ -411,67 +430,47 @@ void runtime_game_patch_trap_only(Module *m) {
         memcpy(m->base+site,&branch,4);
         fprintf(stderr,"[castlevania] skip death fade quad update when anchor data is gone\n");
     }
-    /* A pathfinding receiver can observe a cleared queue wake event while a
-       scene is being torn down. Pop's managed termination exception is fatal
-       in this native host, so release its monitor and return null instead.
-       The caller then uses its own receiver-cleanup path rather than throwing. */
-    if (getenv("TOTK_PATH_QUEUE_EXPERIMENTAL")) {
-        const uint32_t sites[]={0x21479d8,0x2147a70};
-        const uint32_t original[]={0xb40009c0u,0xb4000500u};
+    /* Scene teardown sets ThreadControlQueue.terminate and wakes its receivers.
+       Pop then throws QueueTerminationException; this native host aborts while
+       unwinding it. On the two terminate=true paths the queue monitor is held.
+       Release it, return null, and let CalculatePathsThreaded run its existing
+       receiver cleanup. Keep the unrelated null wake-event paths unchanged. */
+    if (!getenv("TOTK_PATH_QUEUE_UNPATCHED")) {
+        const uint32_t sites[]={0x2147ae0,0x2147b50};
+        const uint32_t original[]={0xf0025580u,0xb9403268u};
         const uint32_t caller=0x2146f60, caller_original=0xb40034e0u;
         const uint64_t page=(m->file_size+0x3fffULL)&~0x3fffULL;
-        const uint32_t entry0=(uint32_t)(page+0x40), entry1=(uint32_t)(page+0x60);
-        const uint32_t null_exit=(uint32_t)(page+0x80);
+        const uint32_t exit_stub=(uint32_t)(page+0x80);
+        const int64_t monitor_branch=(int64_t)0x43b6430-(int64_t)(exit_stub+8);
         uint32_t was;
-        if (page+0x4000!=m->size || page<=sites[1] || page-sites[0]>=0x8000000ULL)
+        if (page+0x4000!=m->size || page<=sites[1] || page-sites[0]>=0x8000000ULL ||
+            monitor_branch<=-0x8000000LL || monitor_branch>=0x8000000LL)
             runtime_fail("Castlevania path queue stub outside branch range");
         for (size_t i=0;i<2;i++) {
             memcpy(&was,m->base+sites[i],4);
-            if (was!=original[i]) runtime_fail("Castlevania path queue wake event site changed");
+            if (was!=original[i]) runtime_fail("Castlevania path queue termination site changed");
         }
         memcpy(&was,m->base+caller,4);
         if (was!=caller_original) runtime_fail("Castlevania path queue caller changed");
         if (mprotect(m->base+page,0x4000,PROT_READ|PROT_WRITE)) runtime_fail("Castlevania path queue stub RW");
-        const uint32_t entries[2]={entry0,entry1};
-        const uint32_t resume[2]={0x21479e0,0x2147a78};
-        for (size_t i=0;i<2;i++) {
-            const uint32_t code[]={
-                0xb4000000u|(((null_exit-entries[i])/4)<<5), /* cbz x0, null exit */
-                0xaa1f03e1u, /* mov x1, xzr */
-                0x14000000u|(((resume[i]-(entries[i]+8))/4)&0x03ffffffu)
-            };
-            memcpy(m->base+entries[i],code,sizeof code);
-        }
         const uint32_t code[]={
-            0x52800028u, /* mov w8, #1 */
-            0x3900d668u, /* strb w8, [x19, #0x35] (terminate) */
             0xf9401260u, /* ldr x0, [x19, #0x20] (monitor) */
             0xaa1f03e1u, /* mov x1, xzr */
-            0x94000000u|(((0x43b6430u-(null_exit+16))/4)&0x03ffffffu), /* Monitor.Exit */
+            0x94000000u|(((0x43b6430u-(exit_stub+8))/4)&0x03ffffffu), /* Monitor.Exit */
             0xaa1f03e0u, /* mov x0, xzr */
-            0x14000000u|(((0x2147aacu-(null_exit+24))/4)&0x03ffffffu) /* Pop epilogue */
+            0x14000000u|(((0x2147aacu-(exit_stub+16))/4)&0x03ffffffu) /* Pop epilogue */
         };
-        memcpy(m->base+null_exit,code,sizeof code);
-        sys_icache_invalidate(m->base+entry0,0x60);
+        memcpy(m->base+exit_stub,code,sizeof code);
+        sys_icache_invalidate(m->base+exit_stub,sizeof code);
         if (mprotect(m->base+page,0x4000,PROT_READ|PROT_EXEC)) runtime_fail("Castlevania path queue stub RX");
         for (size_t i=0;i<2;i++) {
-            uint32_t branch=0x14000000u|(((entries[i]-sites[i])/4)&0x03ffffffu);
+            uint32_t branch=0x14000000u|(((exit_stub-sites[i])/4)&0x03ffffffu);
             memcpy(m->base+sites[i],&branch,4);
-        }
-        /* A receiver may instead see terminate=true at entry or after the
-           event wakes. Both paths build the same managed exception. */
-        const uint32_t terminated[]={0x2147ae0,0x2147b50};
-        const uint32_t terminated_original[]={0xf0025580u,0xb9403268u};
-        for (size_t i=0;i<2;i++) {
-            memcpy(&was,m->base+terminated[i],4);
-            if (was!=terminated_original[i]) runtime_fail("Castlevania path queue termination site changed");
-            uint32_t branch=0x14000000u|(((null_exit-terminated[i])/4)&0x03ffffffu);
-            memcpy(m->base+terminated[i],&branch,4);
         }
         const uint32_t clean_up=0x21477c0;
         uint32_t branch=0xb4000000u|(((clean_up-caller)/4)<<5);
         memcpy(m->base+caller,&branch,4);
-        fprintf(stderr,"[castlevania] exit pathfinding receiver cleanly when queue wake event is gone\n");
+        fprintf(stderr,"[castlevania] exit pathfinding receiver cleanly on queue termination\n");
     }
     if (getenv("TOTK_BOUNDS_TRAP")) {
         for (size_t i=0;i<sizeof castlevania_bounds_sites/sizeof castlevania_bounds_sites[0];i++) {
