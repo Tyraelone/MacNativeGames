@@ -52,6 +52,25 @@ class WorkDirectoryTests(unittest.TestCase):
             self.assertFalse((tree/'tooling').is_symlink())
             self.assertEqual((external/'spirv-cross/keep.txt').read_text(),'shared dependency must survive')
 
+    @unittest.skipUnless(shutil.which('rsync'),'rsync needed for shared-tool link check')
+    def test_shared_tool_link_is_rejected_without_touching_target(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            source, external, work=self.fixture(root)
+            (external/'keep.txt').write_text('existing external data')
+            work.mkdir()
+            (work/'game_tools').symlink_to(external,target_is_directory=True)
+            def run(command,*_args,**_kwargs):
+                if str(command[0])=='rsync':
+                    subprocess.run([str(x) for x in command],check=True,capture_output=True)
+            with mock.patch.object(build_app,'GAME',source), \
+                 mock.patch.object(build_app,'run',side_effect=run), \
+                 mock.patch.object(build_app,'git_fetch'):
+                with self.assertRaisesRegex(build_app.BuildError,'game_tools'):
+                    build_app.prepare_work(work,Path('/usr/bin/python3'),work/'logs')
+            self.assertTrue((work/'game_tools').is_symlink())
+            self.assertEqual((external/'keep.txt').read_text(),'existing external data')
+
     def test_git_fetch_can_replace_a_dangling_cache_link(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)

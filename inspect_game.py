@@ -18,10 +18,9 @@ sys.dont_write_bytecode = True
 from build_game import TARGETS
 
 ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT / "games/totk/scripts"))
-from extract_exefs import (common_tickets, container_entries, decrypt, load_keys,
-                           nca_ctr_key, nca_inventory, partition_entries,
-                           program_nca, read_at)
+from game_tools.extract_exefs import (common_tickets, container_entries, decrypt,
+                                      load_keys, nca_ctr_key, nca_inventory,
+                                      partition_entries, program_nca, read_at)
 
 
 def verified_cnmt(stream, record: dict, header: bytes, keys: dict,
@@ -230,17 +229,17 @@ def inspect(source: Path, key_file: Path, title_id: str | None = None,
     with tempfile.TemporaryDirectory(prefix="mng-inspect-", dir=parent) as workspace:
         work = Path(workspace)
         exefs = work / "exefs"
-        command = [sys.executable, str(ROOT / "games/totk/scripts/extract_exefs.py"),
+        command = [sys.executable, str(ROOT / "game_tools/extract_exefs.py"),
                    str(source), "--keys", str(key_file), "--title-id", identity["title_id"],
                    "--output", str(exefs)]
         if identity["package_kind"] == "update":
             command.append("--update")
         _run_tool(command)
         inventory = work / "elf"
-        _run_tool([sys.executable, str(ROOT / "games/totk/scripts/prepare_modules.py"),
+        _run_tool([sys.executable, str(ROOT / "game_tools/prepare_modules.py"),
                    str(exefs), "--output", str(inventory)])
         dependency_file = work / "dependency-map.json"
-        _run_tool([sys.executable, str(ROOT / "games/totk/scripts/map_dependencies.py"),
+        _run_tool([sys.executable, str(ROOT / "game_tools/map_dependencies.py"),
                    str(inventory), "--output", str(dependency_file)])
         manifest = json.loads((work / "extraction-manifest.json").read_text())
         modules = json.loads((inventory / "modules.json").read_text())

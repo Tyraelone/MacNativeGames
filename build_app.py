@@ -137,13 +137,18 @@ def link(path, target):
 
 def prepare_work(work, py, logs):
     """work/totk: the game folder of this repository with the generated files inside it (the build scripts write
-    extracted/, rewritten/, build/ and analysis/ next to themselves); its tooling/ points at the fetched sources."""
+    extracted/, rewritten/, build/ and analysis/ next to themselves); its tooling/ points at the fetched sources.
+    Shared input tools are copied beside totk so the work folder can run its compatibility entry points."""
+    shared_tools = work / 'game_tools'
+    if shared_tools.is_symlink():
+        raise BuildError(f'{shared_tools} is a symlink; use a work folder with a real game_tools directory')
     tree = work / 'totk'
     tree.mkdir(parents=True, exist_ok=True)
     # Match both directories AND symlinks to directories. A trailing slash
     # allows rsync -a to copy a tooling symlink from a development checkout.
     excludes = [f'--exclude=/{name}' for name in ('extracted', 'rewritten', 'build', 'analysis', '.venv', 'tooling', 'user-data')]
     run(['rsync', '-a', *excludes, f'{GAME}/', f'{tree}/'], logs / 'sources.log')
+    run(['rsync', '-a', f'{REPO / "game_tools"}/', f'{shared_tools}/'], logs / 'shared-tools.log')
     tooling = tree / 'tooling'
     # Migrate a work folder made by the old copier before writing child links:
     # link(tooling/spirv-cross, ...) must not traverse into a shared checkout.
