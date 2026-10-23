@@ -21,6 +21,17 @@ class PackagingCommonTests(unittest.TestCase):
                     packaging_common.outside_repository(path, repository)
             self.assertEqual(packaging_common.outside_repository(root / "Game.app", repository), (root / "Game.app").resolve())
 
+    def test_output_path_rejects_other_worktree_of_same_repository(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            current, other = root / "current", root / "other"
+            current.mkdir()
+            other.mkdir()
+            with mock.patch.object(packaging_common, "_git_worktree_roots",
+                                   return_value=(current.resolve(), other.resolve())):
+                with self.assertRaisesRegex(ValueError, "outside the source project"):
+                    packaging_common.outside_repository(other / "generated", current)
+
     def test_clone_preserves_bytes_when_apfs_clone_is_unavailable(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -6,11 +6,36 @@ import shutil
 import subprocess
 
 
+def _git_worktree_roots(repository: Path) -> tuple[Path, ...]:
+    """Include every checkout of this repository when keeping artifacts outside source."""
+    if not (repository / ".git").exists():
+        return (repository,)
+    try:
+        process = subprocess.Popen(["git", "-C", str(repository), "worktree", "list", "--porcelain"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            output, _ = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            raise ValueError("cannot enumerate source worktrees") from None
+    except OSError as error:
+        raise ValueError("cannot enumerate source worktrees") from error
+    if process.returncode:
+        raise ValueError("cannot enumerate source worktrees")
+    roots = tuple(Path(line[9:]).resolve() for line in output.splitlines()
+                  if line.startswith("worktree "))
+    if repository not in roots:
+        raise ValueError("source worktree missing from Git listing")
+    return roots
+
+
 def outside_repository(path: Path, repository: Path) -> Path:
-    """Resolve an output or work path, including existing parent symlinks."""
+    """Resolve an output or work path, excluding every source worktree."""
     resolved = path.expanduser().resolve()
     root = repository.resolve()
-    if resolved == root or root in resolved.parents:
+    if any(resolved == checkout or checkout in resolved.parents
+           for checkout in _git_worktree_roots(root)):
         raise ValueError(f"generated files must stay outside the source project: {resolved}")
     return resolved
 

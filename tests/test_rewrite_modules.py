@@ -52,6 +52,10 @@ class RewriteModulesTests(unittest.TestCase):
         self.assertEqual(report["runtime"], "not_assessed")
         self.assertEqual(report["modules"]["main"]["gates"], 1)
         self.assertEqual(report["modules"]["main"]["cuts"], 0)
+        self.assertEqual(report["modules"]["main"]["fixups_sha256"],
+                         hashlib.sha256((self.output / "main/main.fixups.tsv").read_bytes()).hexdigest())
+        self.assertEqual(report["modules"]["main"]["gates_sha256"],
+                         hashlib.sha256((self.output / "main/main.gates.tsv").read_bytes()).hexdigest())
         self.assertTrue((self.output / "rewrite-summary.json").is_file())
         self.assertTrue((self.output / "main/main.patched.bin").is_file())
 

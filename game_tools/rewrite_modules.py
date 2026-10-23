@@ -88,6 +88,9 @@ def rewrite_exefs(exefs: Path, manifest: Path, output: Path) -> dict:
             fixups = destination / f"{name}.fixups.tsv"
             require(fixups.is_file() and not fixups.is_symlink(),
                     f"Missing rewrite fixups: {name}")
+            gates_path = destination / f"{name}.gates.tsv"
+            fixups_hash = verified_file(fixups)
+            gates_hash = verified_file(gates_path)
             with source.open("rb") as stream:
                 original = stream.read(0x60)
             require(len(original) == 0x60, f"Truncated NSO header: {name}")
@@ -99,7 +102,8 @@ def rewrite_exefs(exefs: Path, manifest: Path, output: Path) -> dict:
                     f"Unexpected game-specific rewrite for {name}")
             report["modules"][name] = {
                 "build_id": build_id, "nso_sha256": verified_file(source, files[name]["sha256"]),
-                "patched_sha256": verified_file(patched), **counts,
+                "patched_sha256": verified_file(patched),
+                "fixups_sha256": fixups_hash, "gates_sha256": gates_hash, **counts,
             }
         (stage / "rewrite-summary.json").write_text(json.dumps(report, indent=2) + "\n")
         require(not output.exists() and not output.is_symlink(), "Output already exists")

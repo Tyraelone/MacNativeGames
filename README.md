@@ -69,6 +69,8 @@ The offline container, RomFS extraction and indexing, BKTR update merge, NSO inv
 
 After ExeFS extraction, `python3 game_tools/rewrite_modules.py --exefs EXEFS --manifest extraction-manifest.json --output EXTERNAL_DIR` probes instruction rewriting for the NSO modules actually present. It verifies the extraction hashes and rejects game-specific patch records; its output is analysis data, not a runnable port.
 
+Run `python3 game_tools/runtime_preflight.py --exefs EXEFS --manifest extraction-manifest.json --rewrites REWRITTEN_DIR --output EXTERNAL_DIR` on that probe output to validate the loadable modules' dynamic symbols, relocations and host gates. It uses the actual module set, writes its tables outside the repository, and excludes `rtld` under the current native loader convention. The result does not bind host services, validate constructors or start a game. The Mario Wonder base sample exposes about 404,000 relocations; generating an additional flat C table would duplicate about 9.7 MB of data, so a generic loader should first evaluate reading the verified image's relocation tables directly.
+
 For an existing external `DM_NVN_TSV` log, `game_tools/frame_metrics.py` reports frame-time distribution and sample coverage without starting a game; see [performance test methods](docs/performance-followups.md). It does not establish a gameplay performance baseline on its own.
 
 **1. Tools** (once): the Xcode command line tools and [Homebrew](https://brew.sh). An internet connection is needed to install the build dependencies and fetch the pinned SPIRV-Cross source:
@@ -259,6 +261,8 @@ python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
 离线容器读取、RomFS 提取与索引、BKTR 升级档合并、NSO 盘点和依赖图实现位于 `game_tools/`；原 `games/totk/scripts/` 路径保留兼容命令，TOTK 构建时会把共用工具复制到项目外工作目录，现有构建脚本仍可调用。共用 ExeFS 与 BKTR 命令必须显式传入 `--title-id`；BKTR 还要求项目固定且打过补丁的 hactool。共用 RomFS 命令处理本体时要求 `--manifest`，处理 DLC 时要求 `--source` 和 `--title-id`，且始终要求 `--output`。验证结果写入调用方指定的源码目录外位置。`inspect` 仍只检查代码，不提取 RomFS。
 
 提取 ExeFS 后，可运行 `python3 game_tools/rewrite_modules.py --exefs EXEFS --manifest extraction-manifest.json --output 项目外目录`，按实际存在的 NSO 模块探查指令改写。它核对提取哈希并拒绝游戏专用补丁记录；输出只是分析数据，不是可运行的移植版本。
+
+再运行 `python3 game_tools/runtime_preflight.py --exefs EXEFS --manifest extraction-manifest.json --rewrites 改写目录 --output 项目外目录`，按实际模块集核验待装载模块的动态符号、重定位和宿主门，并将静态表写在项目外；按现有原生装载器约定排除 `rtld`。这一步不绑定宿主服务、不验证构造器，也不启动游戏。马里奥本体约有 40.4 万条重定位；若再生成一份平铺 C 表，会重复约 9.7 MB 数据，后续通用装载器应优先评估直接读取已验证映像中的原始重定位表。
 
 项目外现有 `DM_NVN_TSV` 日志可用 `game_tools/frame_metrics.py` 离线汇总帧时间分布和样本覆盖率，方法见[性能复测](docs/performance-followups.md)；单独运行该汇总不构成真实游玩性能基线。
 
