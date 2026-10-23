@@ -135,6 +135,69 @@ static NSMutableArray *variants_of(NSString *shader) {
     g_variants[shader] = v;
     return v;
 }
+/* A warm Metal library alone does not warm the mapping from guest shader +
+   bound-state answers to its translated variant. On first scene entry that
+   mapping used to parse hundreds of individual .variants files and inspect
+   their MSL on the submit thread. Do it after shader preparation, before the
+   first playable scene. No guest code or texture bytes are touched here. */
+void totk_rt_preload_metadata(void) {
+    const char *mode = getenv("TOTK_RT_META_PREWARM");
+    if (mode && !strcmp(mode, "0")) return;
+    NSString *dir = totk_rt_dir();
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSArray<NSString *> *files = [[fm contentsOfDirectoryAtPath:dir error:nil] sortedArrayUsingSelector:@selector(compare:)] ?: @[];
+    const uint64_t index_budget = 16ull << 20, source_budget = 512ull << 20;
+    uint64_t index_bytes = 0, source_bytes = 0, indexes = 0, checked = 0, invalid = 0;
+    uint64_t started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    for (NSString *name in files) @autoreleasepool {
+        if (![name hasSuffix:@".variants"] || name.length != 73) continue;
+        NSString *key = [name substringToIndex:64];
+        BOOL valid_key = YES;
+        for (NSUInteger i = 0; i < 64; i++) { unichar c = [key characterAtIndex:i]; if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) { valid_key = NO; break; } }
+        if (!valid_key) continue;
+        NSString *path = [dir stringByAppendingPathComponent:name];
+        unsigned long long size = [[fm attributesOfItemAtPath:path error:nil] fileSize];
+        if (!size || size > (2u << 20) || index_bytes + size > index_budget) continue;
+        NSData *data = [NSData dataWithContentsOfFile:path];
+        NSArray *rows = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        if (![rows isKindOfClass:[NSArray class]]) { invalid++; continue; }
+        NSMutableArray *prepared = [NSMutableArray arrayWithCapacity:rows.count];
+        NSMutableSet<NSString *> *safe = [NSMutableSet set];
+        for (id item in rows) {
+            if (![item isKindOfClass:[NSDictionary class]]) { invalid++; continue; }
+            NSString *variant = item[@"variant"];
+            if (![variant isKindOfClass:[NSString class]] || variant.length != 77 || ![variant hasPrefix:[key stringByAppendingString:@"-"]]) { invalid++; continue; }
+            BOOL valid_suffix = YES;
+            for (NSUInteger i = 65; i < 77; i++) { unichar c = [variant characterAtIndex:i]; if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) { valid_suffix = NO; break; } }
+            if (!valid_suffix) { invalid++; continue; }
+            NSDictionary *deps = item[@"deps"];
+            if (![deps isKindOfClass:[NSDictionary class]]) { invalid++; continue; }
+            BOOL valid_deps = YES;
+            for (NSString *kind in @[@"tex", @"img", @"attr", @"fout"])
+                if (deps[kind] && ![deps[kind] isKindOfClass:[NSDictionary class]]) { valid_deps = NO; break; }
+            if (!valid_deps) { invalid++; continue; }
+            [prepared addObject:item];
+            NSString *msl_path = [dir stringByAppendingFormat:@"/%@_b.metal", variant];
+            unsigned long long msl_size = [[fm attributesOfItemAtPath:msl_path error:nil] fileSize];
+            if (!msl_size || msl_size > (2u << 20) || source_bytes + msl_size > source_budget) continue;
+            NSString *msl = [NSString stringWithContentsOfFile:msl_path encoding:NSUTF8StringEncoding error:nil];
+            source_bytes += msl_size;
+            if (!msl || [msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"]) { invalid++; continue; }
+            [safe addObject:variant];
+        }
+        pthread_mutex_lock(&g_rt_lock);
+        if (!g_variants) g_variants = [NSMutableDictionary dictionary];
+        if (!g_variants[key]) g_variants[key] = prepared;
+        if (!g_msl_checked) g_msl_checked = [NSMutableSet set];
+        [g_msl_checked unionSet:safe];
+        pthread_mutex_unlock(&g_rt_lock);
+        index_bytes += size; indexes++; checked += safe.count;
+    }
+    LOG("[shader-meta] preloaded %llu indexes / %llu checked variants; invalid %llu; index %.1f MB, source %.1f MB, %.1f ms (TOTK_RT_META_PREWARM=0 disables)",
+        (unsigned long long)indexes, (unsigned long long)checked, (unsigned long long)invalid,
+        index_bytes / 1048576.0, source_bytes / 1048576.0,
+        (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6);
+}
 static int deps_match(NSDictionary *deps, NSDictionary *ans) {
     NSDictionary *defaults = @{@"tex": @"2d", @"img": @{}, @"attr": @"float", @"fout": @"float"};
     for (NSString *kind in defaults) {

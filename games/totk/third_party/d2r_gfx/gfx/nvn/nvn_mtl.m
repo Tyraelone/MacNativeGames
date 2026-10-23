@@ -155,6 +155,7 @@ static int nogpu(void) {
 - (void)addFeedbackHandler:(MTL4CommitFeedbackHandler)block { if (!handlers) handlers = [NSMutableArray array]; [handlers addObject:[block copy]]; [super addFeedbackHandler:block]; }
 @end
 static void gpu_budget_check(const char *where);
+static void res_commit(void);
 static void dead_put_flush(void);
 static int bc_unpack(uint32_t nvn_fmt, uint32_t *pf, int *bpp);
 static void shot(id<MTLTexture> src, const char *path, int screen, const int crop[4]);
@@ -185,6 +186,7 @@ static void bg_gate(void) {
     MLOG("App 不在前台：GPU 提交暂停了 %.1f s，现在继续", (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9);
 }
 static void q4_commit(id<MTL4CommandBuffer> cb, TotkCommitOptions *o) {
+    res_commit();   // All buffers encoded in this command buffer are resident before submission.
     bg_gate();
     gpu_budget_check("提交命令缓冲");
     atomic_fetch_add(&g_q4_inflight, 1);
@@ -192,7 +194,7 @@ static void q4_commit(id<MTL4CommandBuffer> cb, TotkCommitOptions *o) {
     if (!nogpu()) { id<MTL4CommandBuffer> buffers[] = {cb}; [g_q4 commit:buffers count:1 options:o]; return; }
     for (MTL4CommitFeedbackHandler h in o->handlers) h(nil);
 }
-static void cb_commit(id<MTLCommandBuffer> cb) { bg_gate(); if (!nogpu()) [cb commit]; }
+static void cb_commit(id<MTLCommandBuffer> cb) { res_commit(); bg_gate(); if (!nogpu()) [cb commit]; }
 static void cb_wait(id<MTLCommandBuffer> cb) { if (!nogpu()) [cb waitUntilCompleted]; }
 static uint64_t g_fence;                        // 已提交的最大栅栏值（提交线程独占递增） | Highest committed fence value (incremented exclusively by the submit thread)
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -218,7 +220,39 @@ static struct { uint64_t adds, removes, live_bytes; _Atomic uint64_t alive, aliv
 static char g_alloc_track_key;
 static NSMapTable *g_res_site_of;   // resource (weak key) -> NSNumber source line
 static uint64_t g_res_live_bytes;
+/* Opt-in cold-scene attribution. Inclusive timers deliberately show nested work:
+   draw includes texture lookup and argument encoding; texture lookup includes upload. */
+static _Atomic uint64_t g_cold_ns[MTL_COLD_N];
+static _Atomic uint64_t g_cold_res_calls, g_cold_res_actual, g_cold_pool_new;
+static int cold_profile_on(void) {
+    static _Atomic int on = -1;
+    int value = atomic_load_explicit(&on, memory_order_relaxed);
+    if (value < 0) { const char *e = getenv("DM_COLD_PROFILE"); value = e && strcmp(e, "0"); atomic_store_explicit(&on, value, memory_order_relaxed); }
+    return value;
+}
+typedef struct { uint64_t start; int kind; } cold_span;
+static cold_span cold_span_begin(int kind) {
+    return (cold_span){cold_profile_on() ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0, kind};
+}
+static void cold_note(int kind, uint64_t start) {
+    if (start) atomic_fetch_add_explicit(&g_cold_ns[kind], clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start, memory_order_relaxed);
+}
+static void cold_span_end(cold_span *span) {
+    if (span->start) atomic_fetch_add_explicit(&g_cold_ns[span->kind], clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - span->start, memory_order_relaxed);
+}
+#define COLD_SPAN(kind) cold_span cold_span_##kind __attribute__((cleanup(cold_span_end))) = cold_span_begin(kind)
+int mtl_cold_profile_take(uint64_t ns[MTL_COLD_N]) {
+    if (!cold_profile_on()) return 0;
+    for (int i = 0; i < MTL_COLD_N; i++) ns[i] = atomic_exchange_explicit(&g_cold_ns[i], 0, memory_order_relaxed);
+    return 1;
+}
+void mtl_cold_res_counts_take(uint64_t count[3]) {
+    count[0] = atomic_exchange(&g_cold_res_calls, 0);
+    count[1] = atomic_exchange(&g_cold_res_actual, 0);
+    count[2] = atomic_exchange(&g_cold_pool_new, 0);
+}
 static void res_add_at(id<MTLResource> r, int site) {
+    COLD_SPAN(MTL_COLD_RES_ADD);
     if (!r) return;
     if (site < 0 || site >= RES_SITES) site = 0;
     pthread_mutex_lock(&g_res_mu);
@@ -310,9 +344,11 @@ static void res_check(id r, const char *what, int reg) {
              t ? [NSString stringWithFormat:@" 格式 %lu %lux%lu 类型 %lu 用途 %#lx", (unsigned long)t.pixelFormat, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.textureType, (unsigned long)t.usage].UTF8String : ""); }
 }
 static void res_commit(void) {
+    COLD_SPAN(MTL_COLD_RES_COMMIT);
+    if (cold_profile_on()) atomic_fetch_add(&g_cold_res_calls, 1);
     gpu_budget_check("提交驻留集");
     pthread_mutex_lock(&g_res_mu);
-    if (g_res_dirty) { if (!nogpu()) [g_res commit]; g_res_dirty = 0; }
+    if (g_res_dirty) { if (cold_profile_on()) atomic_fetch_add(&g_cold_res_actual, 1); if (!nogpu()) [g_res commit]; g_res_dirty = 0; }
     pthread_mutex_unlock(&g_res_mu);
 }
 
@@ -643,9 +679,23 @@ static int pool_res_all(void) {
     if (v < 0) { const char *e = getenv("TOTK_POOL_RES_ALL"); v = e && atoi(e); if (v) MLOG("TOTK_POOL_RES_ALL=1：内存池建好即放进驻留集（对照用）"); }
     return v;
 }
+static id g_cb;
+static int on_sub_thread(void);
+static int pool_res_batch_on(void) {
+    static _Atomic int on = -1;
+    int value = atomic_load_explicit(&on, memory_order_relaxed);
+    if (value < 0) { const char *e = getenv("TOTK_POOL_RES_BATCH"); value = !e || strcmp(e, "0"); atomic_store_explicit(&on, value, memory_order_relaxed); }
+    return value;
+}
 static void pool_res(pidx_ent *p) {   // caller holds g_mu
     if (p->res) return;
-    res_add((__bridge id<MTLBuffer>)p->buf); res_commit();
+    COLD_SPAN(MTL_COLD_POOL_RES);
+    if (cold_profile_on()) atomic_fetch_add(&g_cold_pool_new, 1);
+    res_add((__bridge id<MTLBuffer>)p->buf);
+    /* During command replay, accumulate first-use pools with textures and
+       staging allocations. Every q4/legacy commit flushes the residency set
+       before GPU submission. Outside replay, preserve the immediate commit. */
+    if (!pool_res_batch_on() || !on_sub_thread() || !g_cb) res_commit();
     p->res = 1; g_pool_res_n++; g_pool_res_bytes += p->hi - p->lo;
 }
 void mtl_pool_res_stats(uint64_t v[4]) {   // registered pools, their bytes, pools / bytes in the residency set
@@ -931,7 +981,7 @@ static void up_owner_check(const char *where) {
 // other threads (the present thread etc.) creating a command buffer do not touch the batch: they do not read or write textures uploaded in this batch; commands that need these textures all come after this replay submission (the batch is flushed before it)
 // Old-queue command buffers (readback / diagnostics / present; to be deleted once M4-4 and M4-5 are migrated away): uploads are already on the Metal 4 queue, and there is no ordering guarantee between the two queues -
 // wait for the upload to complete after flushing it, and only then can the old queue read the upload result (mtl_read_texels waited first and flushed afterwards, the readback beat the upload, 4 failures on t_nvn upload content)
-static id<MTLCommandBuffer> q_cb(void) { if (on_sub_thread()) { up_flush(); while (atomic_load(&g_up_pending)) usleep(200); } return [g_q commandBuffer]; }
+static id<MTLCommandBuffer> q_cb(void) { if (on_sub_thread()) { up_flush(); res_commit(); while (atomic_load(&g_up_pending)) usleep(200); } return [g_q commandBuffer]; }
 static post_op *g_post; static int g_npost, g_postcap;
 // 每次提交一个自动释放池：提交跑在客体线程上（长驻、无运行循环、从不排空隐式池），Metal 回放里自动释放的对象
 // （命令缓冲、编码器、通道描述等）不放池就永远不释放。iOS 真机选角页实测宿主堆每帧涨约 47 个对象、0.22 MiB/s。
@@ -2876,6 +2926,7 @@ static int up_lost_take(id tex) {   // 这张贴图的上传被丢过：从记�
 }
 static void up_diag(void);
 static void up_flush(void) {
+    COLD_SPAN(MTL_COLD_UPLOAD_FLUSH);
     up_owner_check("up_flush");
     if (!g_up_cb) return;
     if (g_up_ce) {
@@ -3315,6 +3366,7 @@ static int tex_mirrored(const tex_t *t) {
 }
 static int tex_check_once(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_TEX_CHECK_ONCE"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("TOTK_TEX_CHECK_ONCE=0：CPU 池贴图每次取用都查是否被改写（旧行为）"); } return v; }
 static id<MTLTexture> tex_mtl(const tex_t *ct) {
+    COLD_SPAN(MTL_COLD_TEXTURE);
     tex_t *t = (tex_t *)ct;
     if (!t || !t->serial) return nil;
     int packaged = tex_mirrored(t);
@@ -4165,6 +4217,7 @@ static void mfx_snapshot_scene(void) {
 static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only);
 static id<MTL4RenderCommandEncoder> rp_begin(void) { return rp_begin_ex(0); }
 static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
+    COLD_SPAN(MTL_COLD_PASS);
     if (g_enc) return g_enc;
     chunk_maybe_split();
     memset(g_zskip_cand_ok, 0, sizeof g_zskip_cand_ok);
@@ -4834,11 +4887,17 @@ static uint64_t stage_sig(int st);
 static int g_tex_hi[6] = {1, 1, 1, 1, 1, 1};
 static NSArray *rt_local(const uint8_t *control, int st);
 static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // 只在提交线程调用 | Called only on the submit thread
+    COLD_SPAN(MTL_COLD_PROGRAM);
     prog_t *p = (prog_t *)cp;
     static const prog_t *lp; static uint64_t lser, lgen; static NvProg *lpr;   // 上次结果：同一对象、同一序号且序号表未变即直接用 | Last result: same object, same serial and unchanged serial table means it is used directly
     uint64_t gen = g_ser_gen;
-    if (p == lp && p->serial == lser && lpr && (gen == lgen || ser_unaffected(lgen, gen, lser))) { lgen = gen; return lpr; }
+    uint64_t fast_start = cold_profile_on() ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0;
+    int fast = p == lp && p->serial == lser && lpr && (gen == lgen || ser_unaffected(lgen, gen, lser));
+    cold_note(MTL_COLD_PROG_FAST, fast_start);
+    if (fast) { lgen = gen; return lpr; }
+    uint64_t serial_start = cold_profile_on() ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0;
     __unsafe_unretained NvProg *have = p->serial ? (__bridge NvProg *)serial_ptr(p->serial) : nil;
+    cold_note(MTL_COLD_PROG_SERIAL, serial_start);
     if (have) { lp = p; lser = p->serial; lgen = gen; lpr = have; return have; }
     shmap_load();
     NvProg *o = [NvProg new];
@@ -4848,18 +4907,24 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // 只在提�
         memcpy(&length,control+0x704,4);memcpy(&nvn_stage,control+0x714,4);
         if (!length || length>16*1024*1024) MDIE("invalid TOTK shader code length %u",length);
         // Host NVN GPU addresses are CPU addresses (MemoryPoolGetBufferAddress).
+        uint64_t hash_start = cold_profile_on() ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0;
         uint8_t md[32];CC_SHA256_CTX ctx;CC_SHA256_Init(&ctx);CC_SHA256_Update(&ctx,control,0x880);
         CC_SHA256_Update(&ctx,(const void *)(uintptr_t)p->sd[i].data,length);CC_SHA256_Final(md,&ctx);
         char key[65];for(unsigned j=0;j<32;j++)snprintf(key+2*j,3,"%02x",md[j]);
+        cold_note(MTL_COLD_PROG_HASH, hash_start);
         // TOTK: stage from control+0x714 (0 vertex, 1 fragment, 5 compute); translation answered from the bound state.
         int st=(int)nvn_stage;if(st!=0&&st!=1&&st!=5)MDIE("TOTK shader %s: unsupported NVN stage %u",key,nvn_stage);
         if (getenv("TOTK_CS_PROBE")) { static int nd; if (nd++ < 6) { char b[4096]; size_t o = 0; const uint8_t *cd = (const uint8_t *)(uintptr_t)p->sd[i].data;
             for (int k = 0x6c0; k < 0x880; k += 4) { uint32_t w; memcpy(&w, control + k, 4); if (w) o += snprintf(b + o, sizeof b - o, " %03x:%x", k, w); }
             o += snprintf(b + o, sizeof b - o, " | code:"); for (int k = 0; k < 0x30; k += 4) { uint32_t w; memcpy(&w, cd + k, 4); o += snprintf(b + o, sizeof b - o, " %x", w); }
             MLOG("[ctl st%d]%s", st, b); } }
+        uint64_t variant_start = cold_profile_on() ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0;
         NSString *variant=totk_rt_variant(@(key),st,control,(const uint8_t *)(uintptr_t)p->sd[i].data,rt_answers(st),rt_local(control,st));
+        cold_note(MTL_COLD_PROG_VARIANT, variant_start);
         if(!variant){o->missing|=1<<st;o->ctl[st]=control;o->code[st]=(const uint8_t *)(uintptr_t)p->sd[i].data;o->key[st]=@(key);continue;}   // iOS: not translated yet, its draws are skipped
+        uint64_t shader_start = cold_profile_on() ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0;
         NvShader *sh=shader_get([variant stringByAppendingString:@"_b"],st);
+        cold_note(MTL_COLD_PROG_SHADER, shader_start);
         if(!sh)MDIE("TOTK shader translation/reflection unavailable for %s",variant.UTF8String);
         o->sh[st]=sh; o->ctl[st]=control; o->code[st]=(const uint8_t *)(uintptr_t)p->sd[i].data; o->key[st]=@(key);
         o->sig[st]=stage_sig(st); o->alt[st]=[NSMutableDictionary dictionaryWithObject:sh forKey:@(o->sig[st])];
@@ -5119,6 +5184,7 @@ static int tex_check_once(void);
 static inline uint64_t treg_stamp(int kind) { return kind == 2 || (kind == 1 && tex_check_once()) ? g_sub_serial : nvn_dirty_now(); }
 static uint8_t treg_kind(const tex_t *t) { return tex_mirrored(t) ? (pkg_hashed(t) ? 2 : 1) : 0; }
 static id<MTLTexture> tex_by_id(int tid) {   // 调用方持 g_rmu | Caller holds g_rmu
+    COLD_SPAN(MTL_COLD_TEXTURE_ID);
     if (g_tpool_n && tid >= g_tpool_n) { if (!g_stat_tex_oob++) MLOG("池外贴图号 %d（池容量 %d）按空槽处理：读出 0", tid, g_tpool_n); return nil; }
     if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) { RED_ONCE(10, "贴图号 %d 未登记", tid); return nil; }
     treg_t *rp = &g_treg[tid];
@@ -5880,6 +5946,7 @@ static id<MTLRenderPipelineState> pso_pend_take(const pso_key *k) {   // 提交�
     return ps;
 }
 static __unsafe_unretained id<MTLRenderPipelineState> pso_get(NvProg *pr, MTLRenderPassDescriptor *unused) {
+    COLD_SPAN(MTL_COLD_PSO);
     (void)unused;
     __unsafe_unretained NvShader *vs = pr->sh[0], *fs = pr->sh[1];
     if (!vs) { RED_ONCE(13, "程序没有顶点着色器（或未映射）"); return nil; }
@@ -6101,6 +6168,7 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
              (unsigned long long)atomic_load(&g_warm_library_count),atomic_load(&g_warm_library_ns)/1e6,
              (unsigned long long)atomic_load(&g_warm_pipeline_count),atomic_load(&g_warm_pipeline_ns)/1e6);
     }
+    totk_rt_preload_metadata();
     atomic_store(&g_warm_running, 0);
     if (runtime_warm_done) runtime_warm_done();
 }
@@ -6531,6 +6599,7 @@ static uint32_t indirect_tex_handle(const nvn_rbind *b, int stage) {
     return handle;
 }
 static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, int metal_vertex) {
+    COLD_SPAN(MTL_COLD_ARGS);
     if (!sh->ae) return 1;
     if (nvn_stage == 1 && !strncmp(sh->key, "0ac9a54938974396", 16) && getenv("DM_NVN_FLASHHDR") && R.rt.n && R.rt.color[0])
         g_flash_tonemap_target = tex_mtl(R.rt.color[0]);
@@ -9120,6 +9189,7 @@ static int mfxup_draw(NvProg *pr) {
 }
 #include "nvn_cube_group.h"
 static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
+    COLD_SPAN(MTL_COLD_DRAW);
 #ifdef CASTLEVANIA_NATIVE_PROBE
     g_cv_copy_shader = 0;
 #endif
@@ -10198,6 +10268,7 @@ static int frz_op(unsigned op, const void *a) {   // 返回 1 = 这条操作不�
 }
 
 void mtl_exec(const uint8_t *p) {
+    COLD_SPAN(MTL_COLD_EXEC);
     static int inited; if (!inited) { inited = 1; state_reset(); }
     static int dump_all = -1; if (dump_all < 0) dump_all = getenv("DM_NVN_PASSDUMP_ALL") != NULL;
     { static long st_frame = -2, st_ms; if (st_frame == -2) { const char *e = getenv("DM_NVN_STALL"); st_frame = e ? atol(e) : -1; st_ms = e && strchr(e, ':') ? atol(strchr(e, ':') + 1) : 1000; }   // TOTK diagnostic: DM_NVN_STALL=frame:ms sleeps the replay thread once at the start of that frame's replay
