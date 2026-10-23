@@ -22,6 +22,10 @@ def align(value, boundary=4096):
     return (value + boundary - 1) & ~(boundary - 1)
 
 
+def nso_hashes_present(flags):
+    return (flags & 0x38) == 0x38
+
+
 def discover_nso_modules(exefs):
     """Use the NSO files actually present; games need not ship subsdk0."""
     names = []
@@ -218,7 +222,7 @@ def prepare(source, destination):
               'build_id': raw[0x40:0x60].hex(), 'elf_sha256': hashlib.sha256(elf).hexdigest(),
               'elf_purpose': 'analysis carrier only; not a native port or runnable program',
               'segments': [{k: v for k, v in s.items() if k != 'data'} for s in segments],
-              'segment_hashes_verified': True, 'mod0_offset': modoff, 'dynamic_offset': dynoff,
+              'segment_hashes_verified': nso_hashes_present(flags), 'mod0_offset': modoff, 'dynamic_offset': dynoff,
               'dynamic_tags': dynamic, 'needed': needed, 'imports': imports, 'exports': exports,
               'svc_instruction_candidates': svc, 'elf_symbol_index_changes': changed,
               'limitations': ['Service permissions do not prove runtime usage.', 'SVC byte matches are candidates until control flow is analyzed.', 'ELF headers and symbol section indices are synthetic analysis metadata.']}

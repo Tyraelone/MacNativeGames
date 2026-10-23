@@ -41,6 +41,13 @@ class BuildGameCliTests(unittest.TestCase):
         self.assertIn("kirby-preview", result.stdout)
         self.assertIn("castlevania", result.stdout)
         self.assertIn("Unknown games", result.stdout)
+        self.assertIn("inspect", result.stdout)
+
+    def test_inspect_help_explains_read_only_input(self):
+        result = self.command("inspect", "--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--keys", result.stdout)
+        self.assertIn("--title-id", result.stdout)
 
     def test_unknown_target_stops_without_running_a_builder(self):
         result = self.command("unknown-game", "--out", "/tmp/would-be.app")
@@ -75,6 +82,11 @@ class BuildGameDispatchTests(unittest.TestCase):
                     build_game.command_for(target, arguments),
                     [sys.executable, str(ROOT / relative_script), *arguments],
                 )
+
+    def test_inspect_routes_to_read_only_inspector_without_rewriting_args(self):
+        args = ["/tmp/game name.nsp", "--keys", "/tmp/key name.keys"]
+        self.assertEqual(build_game.command_for("inspect", args),
+                         [sys.executable, str(ROOT / "inspect_game.py"), *args])
 
     def test_builder_exit_code_is_returned_unchanged(self):
         with tempfile.TemporaryDirectory(prefix="mng-build-dispatch-") as folder:

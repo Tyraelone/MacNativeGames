@@ -29,6 +29,7 @@ TARGETS = {
 def usage() -> str:
     return (
         "Usage: python3 build_game.py list\n"
+        "       python3 build_game.py inspect <game.xci|game.nsp> --keys <prod.keys> [--title-id HEX]\n"
         "       python3 build_game.py <target> <existing builder arguments>\n\n"
         "Targets:\n"
         + "".join(f"  {name:<16} {details[1]}\n" for name, details in TARGETS.items())
@@ -38,7 +39,8 @@ def usage() -> str:
 
 
 def command_for(target: str, arguments: list[str]) -> list[str]:
-    return [sys.executable, str(TARGETS[target][2]), *arguments]
+    script = ROOT / "inspect_game.py" if target == "inspect" else TARGETS[target][2]
+    return [sys.executable, str(script), *arguments]
 
 
 def main(argv=None) -> int:
@@ -50,7 +52,7 @@ def main(argv=None) -> int:
     if args in (["--help"], ["-h"]):
         print(usage(), end="")
         return 0
-    if not args or args[0] not in TARGETS:
+    if not args or args[0] not in TARGETS and args[0] != "inspect":
         print(f"Unknown target: {args[0] if args else '(none)'}\n{usage()}", file=sys.stderr, end="")
         return 2
     result = subprocess.run(command_for(args[0], args[1:]), check=False)

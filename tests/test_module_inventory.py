@@ -15,6 +15,11 @@ import prepare_modules  # noqa: E402
 
 
 class ModuleInventoryTests(unittest.TestCase):
+    def test_optional_nso_segment_hashes_are_not_reported_as_verified(self):
+        self.assertTrue(prepare_modules.nso_hashes_present(0x3f))
+        self.assertFalse(prepare_modules.nso_hashes_present(0x07))
+        self.assertFalse(prepare_modules.nso_hashes_present(0x1f))
+
     def test_module_discovery_accepts_games_without_subsdk(self):
         with tempfile.TemporaryDirectory(prefix="mng-modules-") as folder:
             exefs = Path(folder)

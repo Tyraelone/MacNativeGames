@@ -14,3 +14,5 @@
 这个样本暴露了原 `prepare_modules.py` 和 `map_dependencies.py` 固定要求 `subsdk0` 的假设。现改为盘点实际 NSO，并从生成的 `modules.json` 读取依赖图模块集合；王国之泪仍会包含其 `subsdk0`。马里奥本体与升级档都通过了这两步。临时 ExeFS、ELF 和盘点输出位于项目外 `/tmp/mng-mario-probe-20261023.8fLZdV/`，可从上述原始 NSP 重新生成；它们不是项目依赖。
 
 尚未验证：本体 RomFS 完整性、升级档 BKTR 合并、游戏服务调用、NVN 着色器阶段、指令改写、启动、画面和帧时间。现有正式构建器仍按王国之泪的版本哈希、模块列表和资源规则工作；它不能把本样本直接打包为受支持的 App。提取器验证了 FS header、ExeFS 哈希表与每个 ExeFS 数据块，没有验证 RSA 签名。
+
+统一只读入口 `build_game.py inspect <NSP> --keys <prod.keys>` 已对本体和升级档实际运行。两者均报告 `unported_title`、模块 `rtld/main/sdk`；容器头、ExeFS 哈希链、NSO 段哈希为 `pass`，RomFS、宿主服务、NVN、媒体、改写、游玩性能为 `not_assessed`。小型 JSON 报告保存在项目外 `/tmp/mng-mario-probe-20261023.8fLZdV/{base,update}/inspect-report.json`；检查器的独立临时工作目录已自动清理。同一入口在已有王国之泪本体 NSP 上发现四个 NSO 均匹配固定 1.0.0 代码，但 `main.npdm` 不同，因此报告 `known_title_unknown_version` 与 `code_match`，没有把该包误报为完整的固定配置。
