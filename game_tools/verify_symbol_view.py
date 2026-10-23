@@ -4,6 +4,7 @@
 import argparse
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,12 @@ def verify(runtime: Path, rewrites: Path, output: Path, rounds: int = 7) -> dict
     proof = {"sample_title_id": data["summary"]["title_id"],
              "scope": "offline symbol row and lookup equivalence; no runtime or frame result",
              "modules": {}}
+    names = data["summary"]["module_order"]
+    if not isinstance(names, list) or not names or \
+            not all(isinstance(name, str) and
+                    re.fullmatch(r"(?:main|sdk|subsdk[0-9]+)", name) for name in names) or \
+            len(set(names)) != len(names):
+        raise ValueError("Invalid preflight module order")
     with tempfile.TemporaryDirectory(prefix="mng-symbol-verify-", dir=output.parent) as temporary:
         stage = Path(temporary)
         probe = stage / "symbol-view-probe"
@@ -43,7 +50,7 @@ def verify(runtime: Path, rewrites: Path, output: Path, rounds: int = 7) -> dict
             capture_output=True, text=True)
         if compile_result.returncode:
             raise ValueError(f"Symbol probe compilation failed: {compile_result.stderr[-500:]}")
-        for module in data["summary"]["module_order"]:
+        for module in names:
             table = data["modules"][module]
             tags, layout, symbols = table["dynamic_tags"], table["layout"], table["symbols"]
             image = rewrites / module / f"{module}.patched.bin"
