@@ -14,6 +14,11 @@
 
 #include <time.h>
 #include <unistd.h>
+#ifdef MARIO_NATIVE_PROBE
+#include <fcntl.h>
+#include <errno.h>
+__attribute__((used,visibility("default"))) const char mng_mario_variant_id[] = "MNG_MARIO_WONDER_1_2_1";
+#endif
 #include <mach/mach_time.h>
 /* Guest address layout. The SDK encodes IPC buffer addresses with 39 bits (HIPC descriptor bits 36..38),
    so all guest memory must lie below 2^39. Darwin arm64 keeps 0x10_0000_0000..0x70_0000_0000 reserved,
@@ -215,7 +220,7 @@ static void operation_enabled(unsigned value) {operation_notification=value&255;
 static void performance_enabled(unsigned value) {performance_notification=value&255;}
 static uint32_t performance_configuration[2];
 static void performance_config(int mode,int cfg) {if(mode<0||mode>1)runtime_fail("invalid performance mode");performance_configuration[mode]=(uint32_t)cfg;fprintf(stderr,"[totk] performance request mode=%d cfg=%x: native macOS scheduling\n",mode,(uint32_t)cfg);}
-#ifdef CASTLEVANIA_NATIVE_PROBE
+#if defined(CASTLEVANIA_NATIVE_PROBE) || defined(MARIO_NATIVE_PROBE)
 /* The SDK implementation dereferences Horizon's exit-request manager, which
    is absent in the local process. There is no external OS exit request here;
    keep section nesting for diagnostics while the window's close path handles
@@ -225,6 +230,34 @@ static void enter_exit_section(void) { atomic_fetch_add(&exit_section_depth,1); 
 static void leave_exit_section(void) {
  int old=atomic_fetch_sub(&exit_section_depth,1);
  if(old<=0)runtime_fail("unbalanced exit request handling section");
+}
+#endif
+#ifdef MARIO_NATIVE_PROBE
+/* From the verified update control.nacp, offset 0x3060. */
+static void mario_display_version(void *out) {
+ if(!out)runtime_fail("display version output");
+ static const char version[16]="1.2.1";
+ memcpy(out,version,sizeof version);
+}
+static void mario_pseudo_device_id(void *out) {
+ if(!out)runtime_fail("pseudo device ID output");
+ const char *profile=getenv("TOTK_PROFILE_DIR");
+ if(!profile||!*profile)runtime_fail("pseudo device ID needs a profile directory");
+ char path[1024];
+ if(snprintf(path,sizeof path,"%s/pseudo-device-id.bin",profile)>=(int)sizeof path)
+  runtime_fail("pseudo device ID path");
+ unsigned char id[16];int fd=open(path,O_RDONLY);
+ if(fd<0&&errno==ENOENT){
+  arc4random_buf(id,sizeof id);id[6]=(id[6]&0x0f)|0x40;id[8]=(id[8]&0x3f)|0x80;
+  fd=open(path,O_WRONLY|O_CREAT|O_EXCL,0600);
+  if(fd>=0){ssize_t written=write(fd,id,sizeof id);int closed=close(fd);int ok=written==(ssize_t)sizeof id&&closed==0;
+   if(!ok)runtime_fail("write pseudo device ID");memcpy(out,id,sizeof id);return;}
+  if(errno!=EEXIST)runtime_fail("create pseudo device ID");
+  fd=open(path,O_RDONLY);
+ }
+ if(fd<0||read(fd,id,sizeof id)!=sizeof id||close(fd)!=0)
+  runtime_fail("read pseudo device ID");
+ memcpy(out,id,sizeof id);
 }
 #endif
 static uint64_t desired_language(void) {
@@ -257,11 +290,15 @@ void *runtime_observer(const char *name) {
 }
 void *runtime_override(const char *name) {
  static const struct {const char *name;void *fn;} entries[]={
+#ifdef MARIO_NATIVE_PROBE
+  {"_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE",mario_display_version},
+  {"_ZN2nn2oe17GetPseudoDeviceIdEPNS_4util4UuidE",mario_pseudo_device_id},
+#endif
   {"_ZN2nn2oe18GetDesiredLanguageEv",desired_language},
   {"_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi",performance_config},
   {"_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE",cpu_boost},{"_ZN2nn2oe16GetOperationModeEv",operation_mode},{"_ZN2nn2oe18GetPerformanceModeEv",performance_mode},
   {"_ZN2nn2oe20SetFocusHandlingModeENS0_17FocusHandlingModeE",focus_mode},{"_ZN2nn2oe20GetCurrentFocusStateEv",focus_state},
-#ifdef CASTLEVANIA_NATIVE_PROBE
+#if defined(CASTLEVANIA_NATIVE_PROBE) || defined(MARIO_NATIVE_PROBE)
   {"_ZN2nn2oe31EnterExitRequestHandlingSectionEv",enter_exit_section},
   {"_ZN2nn2oe31LeaveExitRequestHandlingSectionEv",leave_exit_section},
 #endif
@@ -300,7 +337,13 @@ uint64_t runtime_svc(unsigned num,uint64_t *r,const char *module,uint64_t offset
   case 11:arc4random_buf(&value,8);break;
   case 12:value=ASLR_START;break;case 13:value=ASLR_SIZE;break;
   case 14:value=STACK_START;break;case 15:value=STACK_SIZE;break;
-  case 16:value=SYSTEM_RESOURCE_BUDGET;break;case 17:value=sizeof(stack_maps)+sizeof(alias_pages);break;case 18:value=0x0100f2c0115b6000ULL;break;
+  case 16:value=SYSTEM_RESOURCE_BUDGET;break;case 17:value=sizeof(stack_maps)+sizeof(alias_pages);break;case 18:
+#ifdef MARIO_NATIVE_PROBE
+   value=0x010015100b514000ULL;
+#else
+   value=0x0100f2c0115b6000ULL;
+#endif
+   break;
   case 20:value=(uintptr_t)user_exception_context;break;   /* UserExceptionContextAddress: SDK stores e.g. the dying-message region at +0x1c0 */case 23:value=1;break;
   case 24:value=runtime_thread_free_capacity();break; /* FreeThreadCount */
   /* AliasRegionExtraSize (18.0.0+): our alias reservation contains no

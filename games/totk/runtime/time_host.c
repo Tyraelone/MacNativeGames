@@ -88,6 +88,11 @@ static void location_name(char out[0x24]) {
     if (n > 0) { link[n] = 0; const char *z = strstr(link, "zoneinfo/"); snprintf(out, 0x24, "%s", z ? z + 9 : "UTC"); }
     else snprintf(out, 0x24, "UTC");
 }
+static unsigned get_device_location_name(char out[0x24]) {
+    if (!out) return R_INVALID;
+    location_name(out);
+    return 0;
+}
 static void snapshot_init(ClockSnapshot *s) { memset(s, 0, sizeof *s); }
 static unsigned snapshot_create(ClockSnapshot *s) {
     if (!s) return R_INVALID;
@@ -119,6 +124,7 @@ void *runtime_time_override(const char *name) {
         {"_ZN2nn4time23StandardUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", user_time},
         {"_ZN2nn4time26StandardNetworkSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", user_time},
         {"_ZN2nn4time19StandardSteadyClock3nowEv", steady_clock_now},
+        {"_ZN2nn4time21GetDeviceLocationNameEPNS0_12LocationNameE", get_device_location_name},
         {"_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeE", to_calendar},
         {"_ZN2nn4time19ToCalendarTimeInUtcERKNS0_9PosixTimeE", to_calendar_utc},
         {"_ZN2nn4time18ToPosixTimeFromUtcERKNS0_12CalendarTimeE", to_posix_utc},

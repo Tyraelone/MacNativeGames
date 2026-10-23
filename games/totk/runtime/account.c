@@ -36,15 +36,48 @@ static void initialize(void){
 static bool same(const Uid *uid){return uid&&uid->lo==local.lo&&uid->hi==local.hi;}
 static bool valid(const UserHandle *handle){if(!handle||!same(&handle->uid))return false;for(unsigned i=0;i<64;i++)if(tokens[i]&&tokens[i]==handle->token)return true;return false;}
 static unsigned preselected(UserHandle *out){if(!out)runtime_fail("account null user handle");initialize();lock_acquire();for(unsigned i=0;i<64;i++)if(!tokens[i]){tokens[i]=nextToken++;*out=(UserHandle){local,tokens[i]};lock_release();return 1;}lock_release();return 0;}
+/* A local application has one selected user. The SDK's PopOpenUsers path
+   expects a Horizon account service object, so return the same persistent
+   local account through the public UserHandle layout instead. */
+static void pop_open_users(int *count,UserHandle *out,int capacity){
+ if(!count||capacity<0||(capacity&&!out))runtime_fail("PopOpenUsers arguments");
+ *count=0;
+ if(capacity>0){if(!preselected(out))runtime_fail("local account handle capacity");*count=1;}
+}
+static uint32_t list_qualified_users(int *count,Uid *out,int capacity){
+ if(!count||capacity<0||(capacity&&!out))runtime_fail("ListQualifiedUsers arguments");
+ initialize();*count=0;
+ if(capacity>0){out[0]=local;*count=1;}
+ return 0;
+}
+static uint32_t get_user_count(int *out){
+ if(!out)runtime_fail("GetUserCount output");
+ initialize();*out=1;return 0;
+}
 static uint32_t user_id(Uid *out,const UserHandle *handle){lock_acquire();bool ok=out&&valid(handle);if(ok)*out=local;lock_release();return ok?0:0x7c67;}
 static void close_user(const UserHandle *handle){lock_acquire();if(!valid(handle))runtime_fail("invalid local account handle close");for(unsigned i=0;i<64;i++)if(tokens[i]==handle->token){tokens[i]=0;break;}lock_release();}
 static uint32_t existence(unsigned char *out,const Uid *uid){if(!out||!uid)return 0x7c67;initialize();*out=same(uid);return 0;}
 static uint32_t nickname(char *out,const Uid *uid){initialize();if(!out||!same(uid))return 0x7c67;memset(out,0,33);memcpy(out,"Local",5);return 0;}
+static uint32_t load_profile_image(size_t *out_size,void *buffer,size_t capacity,const Uid *uid){
+ initialize();if(!out_size||!same(uid))return 0x7c67;
+ const char *path=getenv("TOTK_PROFILE_IMAGE");if(!path||!*path)return 0x7c67;
+ int fd=open(path,O_RDONLY|O_NOFOLLOW);if(fd<0)return 0x7c67;
+ struct stat st;if(fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_size<=0||st.st_size>256*1024){close(fd);return 0x7c67;}
+ *out_size=(size_t)st.st_size;
+ if(!buffer){close(fd);return capacity==0?0:0x7c67;}
+ if(capacity<*out_size){close(fd);return 0x7c67;}
+ size_t done=0;while(done<*out_size){ssize_t n=read(fd,(unsigned char *)buffer+done,*out_size-done);if(n<=0){close(fd);return 0x7c67;}done+=(size_t)n;}
+ close(fd);return 0;
+}
 void runtime_account_uid(uint64_t out[2]){initialize();out[0]=local.lo;out[1]=local.hi;}
 void *runtime_account_override(const char *name){
  static const struct{const char *name;void *fn;} entries[]={
  {"_ZN2nn7account10InitializeEv",initialize},{"_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE",preselected},
+ {"_ZN2nn7account12PopOpenUsersEPiPNS0_10UserHandleEi",pop_open_users},
+ {"_ZN2nn7account18ListQualifiedUsersEPiPNS0_3UidEi",list_qualified_users},
+ {"_ZN2nn7account12GetUserCountEPi",get_user_count},
  {"_ZN2nn7account9CloseUserERKNS0_10UserHandleE",close_user},{"_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE",user_id},
- {"_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE",existence},{"_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE",nickname}};
+ {"_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE",existence},{"_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE",nickname},
+ {"_ZN2nn7account16LoadProfileImageEPmPvmRKNS0_3UidE",load_profile_image}};
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
 }

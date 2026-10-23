@@ -77,6 +77,8 @@ The separate `runtime_common/reloc_apply.c` core also applies those records to a
 
 The runtime preflight also classifies only symbols referenced by relocations. For the Mario Wonder base `main/sdk`, 27,913 of 27,935 symbolic relocations have a guest-module address candidate; 22 are weak-zero candidates, and none are strong symbols lacking a guest candidate. This is a static linkage inventory, not a check that the weak imports, host overrides, dynamically loaded NVN APIs, or service ABI will work.
 
+Mario Wonder update 1.2.1 now has a separate [native preview packaging route](games/mario_wonder/README.md) based on the verified external build work. The current App was exercised through the opening playable scene; this route still requires the prepared external host and does not yet turn arbitrary game files into an App through `build_game.py`.
+
 For an existing external `DM_NVN_TSV` log, `game_tools/frame_metrics.py` reports frame-time distribution and sample coverage without starting a game; see [performance test methods](docs/performance-followups.md). It does not establish a gameplay performance baseline on its own.
 
 **1. Tools** (once): the Xcode command line tools and [Homebrew](https://brew.sh). An internet connection is needed to install the build dependencies and fetch the pinned SPIRV-Cross source:
@@ -275,6 +277,8 @@ python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
 共用的 `runtime_common/reloc_apply.c` 也能通过调用方提供的符号解析函数直接写入这些记录。用固定测试符号地址对马里奥 `main/sdk` 离线对拍时，流式路径与独立平铺表路径得到完全相同的映像字节。一次七轮测试里，两模块热轮次最短耗时合计分别约为 1.18 和 0.57 毫秒；差值包含回调与检查开销，未计入表加载、真实宿主绑定和 App 启动。现有游戏装载器未切换，这项测试也没有验证帧时间。
 
 共用静态预检现只统计实际被重定位引用的符号。马里奥本体 `main/sdk` 的 27,935 条符号重定位中，27,913 条有同包模块地址候选，22 条为弱置零候选，没有缺少同包定义的强符号重定位。这是静态链接线索，不证明弱导入、宿主覆盖、动态获取的 NVN 接口或服务 ABI 可用。
+
+马里奥升级档 1.2.1 现有独立的[原生预览版打包入口](games/mario_wonder/README.md)，使用已验证的项目外构建工作区。当前 App 已实测进入开场可操作场景；该入口仍要求先准备项目外宿主，并不意味着 `build_game.py` 已能从任意游戏文件直接生成 App。
 
 项目外现有 `DM_NVN_TSV` 日志可用 `game_tools/frame_metrics.py` 离线汇总帧时间分布和样本覆盖率，方法见[性能复测](docs/performance-followups.md)；单独运行该汇总不构成真实游玩性能基线。
 

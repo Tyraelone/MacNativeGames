@@ -90,3 +90,9 @@
 #define GAME_ADDR_0x8f6cbc 0x8f6cbc
 #define GAME_OUTPUT_CALL_WORD 0x94000082u
 #endif
+#ifdef MARIO_NATIVE_PROBE
+#undef TOTK_GAME_VERSION
+#define TOTK_GAME_VERSION "1.2.1"
+#undef TOTK_GAME_DIR
+#define TOTK_GAME_DIR "mario"
+#endif
