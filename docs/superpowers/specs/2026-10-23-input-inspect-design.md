@@ -12,7 +12,7 @@
 
 ## 状态与信任边界
 
-与王国之泪 `expected-v*.json` 的整套 ExeFS 文件哈希完全匹配时，标记 `verified_exefs_profile` 并返回版本。已登记 title ID 但未匹配完整哈希时标记 `known_title_unknown_version`；若全部 NSO 代码哈希唯一匹配某个版本、但 `main.npdm` 不同，另列 `code_match` 与不匹配文件名，仍不升格为已支持。其他 title 标记 `unported_title`。卡比和恶魔城现有打包仍需要项目外已验证的宿主，本阶段不把它们的原始 NSP 自动升级成正式构建输入。三种状态都不表示 RomFS、服务、NVN、媒体、指令改写或实机帧时间已经通过。
+登记目标各自指定 `expected-v*.json` 所在目录；检查器仅加载已登记目标的固定配置，并校对配置 title ID。当前只有王国之泪具备该配置。与某目标整套 ExeFS 文件哈希完全匹配时，标记 `verified_exefs_profile` 并返回版本。已登记 title ID 但未匹配完整哈希时标记 `known_title_unknown_version`；若全部 NSO 代码哈希唯一匹配某个版本、但 `main.npdm` 不同，另列 `code_match` 与不匹配文件名，仍不升格为已支持。其他 title 标记 `unported_title`。卡比和恶魔城现有打包仍需要项目外已验证的宿主，本阶段不把它们的原始 NSP 自动升级成正式构建输入。三种状态都不表示 RomFS、服务、NVN、媒体、指令改写或实机帧时间已经通过。
 
 报告分列 `container_header`、`exefs_hash_chain`、`nso_segment_hashes` 的验证状态。NSO 段哈希可为 `pass`、`partial` 或 `not_present`，每个模块单列是否验证；NCA RSA 签名标记 `not_checked`。`romfs`、`host_services`、`nvn`、`media`、`rewrites`、`gameplay_performance` 均标记未评估。静态导入按分组计数，并注明它只是名称候选，不是调用或 ABI 证明。失败的输入不能产生成功报告；退出码非零且不留下临时目录。
 

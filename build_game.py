@@ -12,16 +12,19 @@ TARGETS = {
         "0100F2C0115B6000",
         "full build from verified XCI/NSP",
         ROOT / "build_app.py",
+        ROOT / "games/totk/assets",
     ),
     "kirby-preview": (
         "01007E3006DDA000",
         "preview packaging from a prepared host",
         ROOT / "games/kirby/package_preview.py",
+        ROOT / "games/kirby/assets",
     ),
     "castlevania": (
         "0100BA4026E94000",
         "1.1.0 packaging from verified work",
         ROOT / "games/castlevania/build_app.py",
+        ROOT / "games/castlevania/assets",
     ),
 }
 
@@ -46,7 +49,7 @@ def command_for(target: str, arguments: list[str]) -> list[str]:
 def main(argv=None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args == ["list"]:
-        for name, (title_id, status, _) in TARGETS.items():
+        for name, (title_id, status, _, _) in TARGETS.items():
             print(f"{name:<16} {title_id}  {status}")
         return 0
     if args in (["--help"], ["-h"]):

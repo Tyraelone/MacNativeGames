@@ -89,6 +89,49 @@ class InspectIdentityTests(unittest.TestCase):
         self.assertIsNone(inspect_game.match_profile(profile["title_id"], hashes))
         self.assertIsNone(inspect_game.match_profile("010015100B514000", profile["exefs_sha256"]))
 
+    def test_profiles_are_discovered_from_registered_game_directories(self):
+        title = "0100000000001000"
+        hashes = {"main": "a" * 64, "main.npdm": "b" * 64}
+        with tempfile.TemporaryDirectory(prefix="mng-profile-test-") as folder:
+            root = Path(folder)
+            assets = root / "games/sample/assets"
+            assets.mkdir(parents=True)
+            (assets / "expected-v1.json").write_text(json.dumps({
+                "title_id": title, "display_version": "1.0", "exefs_sha256": hashes}))
+            targets = {"sample": (title, "prepared host packaging", root / "builder.py", assets)}
+            with patch.object(inspect_game, "TARGETS", targets):
+                self.assertEqual(inspect_game.match_profile(title, hashes),
+                                 {"target": "sample", "version": "1.0"})
+                changed = {**hashes, "main.npdm": "c" * 64}
+                self.assertEqual(inspect_game.match_code_profile(title, changed), {
+                    "target": "sample", "version": "1.0",
+                    "mismatched_files": ["main.npdm"]})
+
+    def test_misfiled_profile_does_not_claim_another_game(self):
+        with tempfile.TemporaryDirectory(prefix="mng-profile-test-") as folder:
+            root = Path(folder)
+            assets = root / "games/sample/assets"
+            assets.mkdir(parents=True)
+            (assets / "expected-v1.json").write_text(json.dumps({
+                "title_id": "0100000000002000", "display_version": "1.0",
+                "exefs_sha256": {"main": "a" * 64}}))
+            targets = {"sample": ("0100000000001000", "test", root / "builder.py", assets)}
+            with patch.object(inspect_game, "TARGETS", targets):
+                with self.assertRaisesRegex(ValueError, "Profile title ID mismatch"):
+                    inspect_game.match_profile("0100000000001000", {"main": "a" * 64})
+
+    def test_incomplete_registered_profile_fails_cleanly(self):
+        with tempfile.TemporaryDirectory(prefix="mng-profile-test-") as folder:
+            root = Path(folder)
+            assets = root / "games/sample/assets"
+            assets.mkdir(parents=True)
+            (assets / "expected-v1.json").write_text(json.dumps({
+                "title_id": "0100000000001000", "display_version": "1.0"}))
+            targets = {"sample": ("0100000000001000", "test", root / "builder.py", assets)}
+            with patch.object(inspect_game, "TARGETS", targets):
+                with self.assertRaisesRegex(ValueError, "Invalid ExeFS profile"):
+                    inspect_game.match_profile("0100000000001000", {"main": "a" * 64})
+
     def test_report_separates_known_code_from_unknown_title_and_capabilities(self):
         profile = json.loads((ROOT / "games/totk/assets/expected-v1.0.0.json").read_text())
         files = [{"name": name, "sha256": digest} for name, digest

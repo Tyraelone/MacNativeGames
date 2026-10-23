@@ -54,26 +54,46 @@ def select_program(source: Path, key_file: Path, title_id: str | None = None) ->
             "metadata_title_ids": metadata}
 
 
+def registered_profiles():
+    """Read pinned profiles only from registered target directories."""
+    for target, details in TARGETS.items():
+        title_id, _, _, directory = details
+        for path in sorted(directory.glob("expected-v*.json")):
+            expected = json.loads(path.read_text())
+            hashes = expected.get("exefs_sha256") if isinstance(expected, dict) else None
+            if (not isinstance(hashes, dict) or not hashes or
+                    not isinstance(expected.get("display_version"), str) or
+                    not expected["display_version"] or
+                    any(not isinstance(name, str) or not name or
+                        not isinstance(digest, str) or len(digest) != 64 or
+                        any(char not in "0123456789abcdef" for char in digest)
+                        for name, digest in hashes.items())):
+                raise ValueError(f"Invalid ExeFS profile: {path}")
+            if expected.get("title_id") != title_id:
+                raise ValueError(f"Profile title ID mismatch: {path}")
+            yield target, expected
+
+
 def match_profile(title_id: str, files: dict[str, str]) -> dict | None:
     """Only complete pinned ExeFS hashes establish a known build version."""
-    for path in sorted((ROOT / "games/totk/assets").glob("expected-v*.json")):
-        expected = json.loads(path.read_text())
-        if expected["title_id"] == title_id and expected["exefs_sha256"] == files:
-            return {"target": "totk", "version": expected["display_version"]}
-    return None
+    matches = [{"target": target, "version": expected["display_version"]}
+               for target, expected in registered_profiles()
+               if expected["title_id"] == title_id and expected["exefs_sha256"] == files]
+    if len(matches) > 1:
+        raise ValueError("Ambiguous exact ExeFS profile")
+    return matches[0] if matches else None
 
 
 def match_code_profile(title_id: str, files: dict[str, str]) -> dict | None:
     """Show a uniquely matching code set while keeping metadata mismatches visible."""
     candidates = []
-    for path in sorted((ROOT / "games/totk/assets").glob("expected-v*.json")):
-        expected = json.loads(path.read_text())
+    for target, expected in registered_profiles():
         want = expected["exefs_sha256"]
         if expected["title_id"] != title_id or set(files) != set(want) or files == want:
             continue
         code = [name for name in want if not name.endswith(".npdm")]
         if all(files[name] == want[name] for name in code):
-            candidates.append({"target": "totk", "version": expected["display_version"],
+            candidates.append({"target": target, "version": expected["display_version"],
                                "mismatched_files": sorted(name for name in want
                                                           if files[name] != want[name])})
     return candidates[0] if len(candidates) == 1 else None
