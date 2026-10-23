@@ -14,6 +14,56 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RuntimePreflightTests(unittest.TestCase):
+    def test_linkage_counts_only_referenced_symbols_and_excludes_rtld(self):
+        def symbol(name, defined=False, binding=1, value=0):
+            return {"name": name, "defined": defined, "binding": binding, "value": value}
+
+        modules = {
+            "main": {
+                "layout": {"KEY_PAGE_OFF": 0x1000},
+                "symbols": [symbol("", binding=0), symbol("own", True, value=0x100),
+                            symbol("shared"), symbol("optional", binding=2),
+                            symbol("required"), symbol("unused"),
+                            symbol("bad_self", True, value=0x2000), symbol("rtld_only")],
+                "relocations": [{"kind": 1027, "symbol": 0}] +
+                               [{"kind": 257, "symbol": index}
+                                for index in (1, 2, 3, 4, 6, 7)],
+            },
+            "sdk": {
+                "layout": {"KEY_PAGE_OFF": 0x1000},
+                "symbols": [symbol("", binding=0), symbol("shared", True, value=0x500)],
+                "relocations": [],
+            },
+            "rtld": {
+                "layout": {"KEY_PAGE_OFF": 0x1000},
+                "symbols": [symbol("", binding=0), symbol("rtld_only", True, value=0x100)],
+                "relocations": [],
+            },
+        }
+        report = runtime_preflight.summarize_linkage(modules, ["main", "sdk"])
+        self.assertEqual(report["main"]["symbolic_relocations"], 6)
+        self.assertEqual(report["main"]["local_candidate"], 1)
+        self.assertEqual(report["main"]["module_candidate"], 1)
+        self.assertEqual(report["main"]["weak_zero_candidate"], 1)
+        self.assertEqual(report["main"]["host_required_candidate"], 3)
+        self.assertEqual(report["main"]["weak_zero_names"], ["optional"])
+        self.assertEqual(report["main"]["host_required_names"],
+                         ["bad_self", "required", "rtld_only"])
+
+    def test_linkage_does_not_export_reserved_symbol_zero(self):
+        modules = {
+            "main": {"layout": {"KEY_PAGE_OFF": 0x1000},
+                     "symbols": [{"name": "", "defined": False, "binding": 0, "value": 0},
+                                 {"name": "x", "defined": False, "binding": 1, "value": 0}],
+                     "relocations": [{"kind": 257, "symbol": 1}]},
+            "sdk": {"layout": {"KEY_PAGE_OFF": 0x1000},
+                    "symbols": [{"name": "x", "defined": True, "binding": 1, "value": 0x100}],
+                    "relocations": []},
+        }
+        report = runtime_preflight.summarize_linkage(modules, ["main", "sdk"])
+        self.assertEqual(report["main"]["module_candidate"], 0)
+        self.assertEqual(report["main"]["host_required_names"], ["x"])
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="mng-runtime-preflight-")
         self.addCleanup(temp.cleanup)
@@ -85,6 +135,8 @@ class RuntimePreflightTests(unittest.TestCase):
         self.assertEqual(report["modules"]["main"]["encoded_relocation_bytes"], 24)
         self.assertEqual(report["modules"]["main"]["flat_c_table_estimate_bytes"], 24)
         self.assertEqual(report["modules"]["main"]["gates"], 1)
+        self.assertEqual(report["linkage"]["main"]["host_required_candidate"], 1)
+        self.assertEqual(report["linkage"]["main"]["host_required_names"], ["foo"])
         self.assertEqual(report["runtime"], "not_assessed")
         data = json.loads((self.output / "runtime-modules.json").read_text())
         self.assertEqual(data["modules"]["main"]["relocations"][0],

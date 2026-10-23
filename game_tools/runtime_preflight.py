@@ -176,6 +176,51 @@ def module_data(name: str, exefs: Path, rewrites: Path, source_row: dict) -> dic
             "symbols": symbols, "relocations": relocations, "gates": gates}
 
 
+def summarize_linkage(modules: dict, module_order: list[str]) -> dict:
+    # The loader's per-module hash keeps the first defined symbol for a name.
+    # Its global search then checks the modules in runtime load order.
+    first_definitions = {}
+    for name in module_order:
+        definitions = {}
+        for index, symbol in enumerate(modules[name]["symbols"]):
+            if index and symbol["defined"]:
+                definitions.setdefault(symbol["name"], symbol["value"])
+        first_definitions[name] = definitions
+    global_candidates = set()
+    for name in module_order:
+        limit = modules[name]["layout"]["KEY_PAGE_OFF"]
+        global_candidates.update(symbol for symbol, value in first_definitions[name].items()
+                                 if value < limit)
+
+    result = {}
+    for name in module_order:
+        module = modules[name]
+        limit = module["layout"]["KEY_PAGE_OFF"]
+        counts = {"symbolic_relocations": 0, "local_candidate": 0,
+                  "module_candidate": 0, "weak_zero_candidate": 0,
+                  "host_required_candidate": 0}
+        weak_names, required_names = set(), set()
+        for relocation in module["relocations"]:
+            if relocation["kind"] == 1027:
+                continue
+            counts["symbolic_relocations"] += 1
+            symbol = module["symbols"][relocation["symbol"]]
+            if symbol["defined"] and symbol["binding"] != 2 and symbol["value"] < limit:
+                counts["local_candidate"] += 1
+            elif not (symbol["defined"] and symbol["binding"] != 2) and \
+                    symbol["name"] in global_candidates:
+                counts["module_candidate"] += 1
+            elif symbol["binding"] == 2:
+                counts["weak_zero_candidate"] += 1
+                weak_names.add(symbol["name"])
+            else:
+                counts["host_required_candidate"] += 1
+                required_names.add(symbol["name"])
+        result[name] = {**counts, "weak_zero_names": sorted(weak_names),
+                        "host_required_names": sorted(required_names)}
+    return result
+
+
 def prepare(exefs: Path, manifest: Path, rewrites: Path, output: Path) -> dict:
     require(not Path(output).expanduser().is_symlink(), "Output is a symlink")
     exefs = outside_repository(Path(exefs), ROOT)
@@ -234,6 +279,9 @@ def prepare(exefs: Path, manifest: Path, rewrites: Path, output: Path) -> dict:
                for name in loadable}
     report = {"format": 1, "title_id": title_id, "module_order": loadable,
               "excluded_modules": [name for name in discovered if name not in loadable],
+              "linkage": summarize_linkage(modules, loadable),
+              "linkage_scope": "Guest address candidates for referenced relocations only; "
+                               "host overrides, ABI and runtime use not assessed",
               "modules": {name: {"symbols": len(data["symbols"]),
                                  "relocations": len(data["relocations"]),
                                  "relocation_kinds": dict(Counter(str(row["kind"])
