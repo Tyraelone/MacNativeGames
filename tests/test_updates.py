@@ -14,7 +14,7 @@ from test_game_containers import (HEADER, AREA, TITLEKEK, CONTENT, SCRIPTS, TITL
                                   encrypt, nca, partition, ticket, game_image, romfs)
 from cryptography.hazmat.primitives.ciphers import modes
 from extract_exefs import decrypt, common_tickets, container_entries
-from extract_update_romfs import merge
+from extract_update_romfs import merge, main as legacy_merge_main
 import build_app
 
 
@@ -142,7 +142,31 @@ class Updates(unittest.TestCase):
         self.assertFalse((self.root/'failed').exists())
         self.assertFalse(list(self.root.glob('update-merge-*')))
 
+    def test_shared_merge_requires_explicit_title_id(self):
+        from game_tools import extract_update_romfs as shared_update
+        base = self.root/'base.nsp'
+        base.write_bytes(game_image('nsp'))
+        output = self.root/'merged'
+        with self.assertRaises(TypeError):
+            shared_update.merge(base, self.update, self.keys, Path('/usr/bin/true'), output)
+        with self.assertRaisesRegex(ValueError, 'title ID'):
+            shared_update.merge(base, self.update, self.keys, Path('/usr/bin/true'), output,
+                                title_id='wrong')
+        with self.assertRaisesRegex(ValueError, 'Expected base game'):
+            shared_update.merge(base, self.update, self.keys, Path('/usr/bin/true'), output,
+                                title_id='010015100B514000')
+        self.assertFalse(output.exists())
+
+    def test_legacy_merge_command_keeps_totk_title_default(self):
+        from game_tools import extract_update_romfs as shared_update
+        argv = ['extract_update_romfs.py', 'base.nsp', 'update.nsp', '--keys', 'prod.keys',
+                '--hactool', 'hactool', '--output', 'merged']
+        with patch.object(sys, 'argv', argv), patch.object(shared_update, 'merge') as selected:
+            legacy_merge_main()
+        self.assertEqual(selected.call_args.kwargs['title_id'], f'{TITLE:016X}')
+
     def test_merge_selects_requested_title_from_combined_xci(self):
+        from game_tools import extract_update_romfs as shared_update
         selected = 0x0100BA4026E94000
         selected_program = nca(title=selected)
         secure = partition([('other.nca', nca()), ('selected.nca', selected_program),
@@ -167,8 +191,8 @@ class Updates(unittest.TestCase):
                 kwargs['stdout'].write(''.join(f'Level {i} (GOOD)\n' for i in range(6)))
                 return subprocess.CompletedProcess(command, 0)
             with patch('extract_update_romfs.subprocess.run', side_effect=hactool_run):
-                merge(base, update, self.keys, Path('/usr/bin/true'), self.root / 'merged-selected',
-                      title_id=f'{selected:016X}')
+                shared_update.merge(base, update, self.keys, Path('/usr/bin/true'),
+                                    self.root / 'merged-selected', title_id=f'{selected:016X}')
         self.assertEqual((self.root / 'merged-selected/romfs.bin').read_bytes(), romfs())
 
     def test_bundle_contains_only_selected_game_version(self):

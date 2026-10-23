@@ -22,3 +22,5 @@
 将 RomFS 提取与索引移到共用工具后，对本体 NSP 另作项目外的真实验证：FS header 和六层 IVFC 均通过，RomFS 大小 3,726,437,684 字节、SHA-256 为 `93f395acc2cb55ab2b7a9ad9b74a39a797f3e82483d7fedc85a3bc229baf8aab`，索引到 19,012 个文件。本次耗时约 5.68 秒，仅是这台机器对该输入的一次离线提取测量，不是游戏帧时间。完整 RomFS 临时文件已清理；小型摘要保存在 `/tmp/mng-mario-romfs-proof-20261023.json`，系统可能清理该临时证据。`inspect` 报告仍将 RomFS 标为 `not_assessed`，因为它不执行大型提取。
 
 随后用项目固定提交的 hactool 和原始本体、升级档、`prod.keys` 运行 BKTR 合并。hactool 对原始密钥文件中无关但长度不合其格式的项报错；构建脚本现将它需要的有效 NCA 密钥类别写入权限为 `0600` 的项目外临时文件，并在合并后清理。使用原始 `prod.keys` 重跑，BKTR 和六层 IVFC 均通过：合并 RomFS 为 3,732,302,808 字节、19,034 个文件，SHA-256 `e68e6b26c3d4edbdc879a54edcaf70c0be7877d881eb41a42cfcdb1d3b8d328b`。该结果与先前手工筛选密钥的独立运行一致；大型临时输出已清理，摘要位于 `/tmp/mng-mario-bktr-fixed-proof-20261023.json`。本机验证使用 Xcode 26.5 SDK；系统默认的命令行工具 SDK 在链接 hactool 时失败。此验证仍不证明马里奥可原生运行。
+
+BKTR 合并器移到 `game_tools/` 后，以要求显式 `--title-id 010015100B514000` 的新共用命令和同一批原始输入再次完整运行。固定 hactool 的构建及合并共耗时约 47.2 秒；六层 IVFC、3,732,302,808 字节、19,034 个文件和上述 SHA-256 再次一致。临时 hactool、合并输出和密钥文件均已清理，仅保留小型摘要 `/tmp/mng-mario-shared-bktr-proof-20261023.json`。该时间是一次离线工具运行，不是游戏启动或帧时间。

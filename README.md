@@ -64,7 +64,7 @@ python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
 
 `inspect` checks a single XCI/NSP's internal title, hashed CNMT raw version when available, ExeFS hashes, NSO modules and static imports without making an App. A CNMT raw version is not a display version such as "1.2.1". For a combined XCI, `--title-id HEX` selects a base Program; combined update XCIs with multiple Programs are unsupported, so inspect a separate update NSP. Pinned ExeFS profiles are read from each registered game's assets directory; only Tears of the Kingdom currently has them. Its JSON distinguishes an exact pinned ExeFS profile from a code match with different metadata and from an unported title; NCA RSA signatures are not checked, and runtime services, graphics, media, RomFS and performance remain unassessed. Temporary analysis files stay outside the repository and are removed after the command.
 
-The offline container, RomFS extraction and indexing, NSO inventory, and dependency tools live in `game_tools/`. The former `games/totk/scripts/` paths remain as compatibility commands for existing build scripts; a TOTK build copies the shared tools into its external work folder. `inspect` still checks code only and does not extract RomFS.
+The offline container, RomFS extraction and indexing, BKTR update merge, NSO inventory, and dependency tools live in `game_tools/`. The former `games/totk/scripts/` paths remain as compatibility commands for existing build scripts; a TOTK build copies the shared tools into its external work folder. The shared BKTR command requires an explicit `--title-id` and the project's pinned, patched hactool; it writes its verified result to a caller-selected directory outside this source tree. `inspect` still checks code only and does not extract RomFS.
 
 **1. Tools** (once): the Xcode command line tools and [Homebrew](https://brew.sh). An internet connection is needed to install the build dependencies and fetch the pinned SPIRV-Cross source:
 
@@ -250,7 +250,7 @@ python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
 
 `inspect` 对单个 XCI/NSP 核对内部 title、可验证的 CNMT 原始版本值、ExeFS 哈希、NSO 模块及静态导入，不生成 App；CNMT 原始值不能直接换算成“1.2.1”这类显示版本。组合 XCI 可用 `--title-id HEX` 选择本体 Program。含多个 Program 的组合更新 XCI 暂不支持，请用独立更新 NSP 检查。固定 ExeFS 配置从各已登记游戏的资源目录读取；目前只有王国之泪提供了这类配置。JSON 把完整固定的 ExeFS 配置、仅代码匹配但元数据不同、未移植 title 分开报告；NCA RSA 签名未核验，宿主服务、图形、媒体、RomFS 和性能仍标为未评估。临时分析文件在项目外创建并于命令结束时清除。
 
-离线容器读取、RomFS 提取与索引、NSO 盘点和依赖图实现位于 `game_tools/`；原 `games/totk/scripts/` 路径保留兼容命令，TOTK 构建时会把共用工具复制到项目外工作目录，现有构建脚本仍可调用。`inspect` 仍只检查代码，不提取 RomFS。
+离线容器读取、RomFS 提取与索引、BKTR 升级档合并、NSO 盘点和依赖图实现位于 `game_tools/`；原 `games/totk/scripts/` 路径保留兼容命令，TOTK 构建时会把共用工具复制到项目外工作目录，现有构建脚本仍可调用。共用 BKTR 命令必须显式传入 `--title-id` 和项目固定且打过补丁的 hactool，验证结果写入调用方指定的源码目录外位置。`inspect` 仍只检查代码，不提取 RomFS。
 
 **1. 工具**（只需一次）：Xcode 命令行工具和 [Homebrew](https://brew.sh)。安装构建依赖和获取固定版本的 SPIRV-Cross 源码需要联网：
 

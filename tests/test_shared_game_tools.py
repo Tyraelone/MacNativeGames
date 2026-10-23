@@ -68,6 +68,14 @@ class SharedGameToolsTests(unittest.TestCase):
             self.assertEqual((output / "romfs.bin").read_bytes(), romfs())
             self.assertTrue((output / "index.json").is_file())
 
+    def test_shared_update_command_requires_title_id(self):
+        command = [sys.executable, str(ROOT / "game_tools/extract_update_romfs.py"),
+                   "base.nsp", "update.nsp", "--keys", "keys.txt", "--hactool", "hactool",
+                   "--output", "merged"]
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("--title-id", result.stderr)
+
     @unittest.skipUnless(shutil.which("rsync"), "rsync needed for real work copy")
     def test_copied_totk_entry_points_find_shared_tools(self):
         with tempfile.TemporaryDirectory(prefix="mng-shared-work-") as folder:
@@ -76,7 +84,8 @@ class SharedGameToolsTests(unittest.TestCase):
             scripts = source / "scripts"
             scripts.mkdir(parents=True)
             (source / "requirements.txt").write_text("")
-            for name in ("extract_exefs", "extract_romfs", "prepare_modules", "map_dependencies"):
+            for name in ("extract_exefs", "extract_romfs", "extract_update_romfs",
+                         "prepare_modules", "map_dependencies"):
                 shutil.copy2(ROOT / f"games/totk/scripts/{name}.py", scripts / f"{name}.py")
 
             def copy_only(command, *_args, **_kwargs):
@@ -90,7 +99,9 @@ class SharedGameToolsTests(unittest.TestCase):
                 tree = build_app.prepare_work(work, Path(sys.executable), work / "logs")
 
             self.assertTrue((work / "game_tools/extract_exefs.py").is_file())
-            for name in ("extract_exefs", "extract_romfs", "prepare_modules", "map_dependencies"):
+            self.assertTrue((work / "game_tools/extract_update_romfs.py").is_file())
+            for name in ("extract_exefs", "extract_romfs", "extract_update_romfs",
+                         "prepare_modules", "map_dependencies"):
                 result = subprocess.run(
                     [sys.executable, str(tree / f"scripts/{name}.py"), "--help"],
                     cwd=tree, capture_output=True, text=True, check=False)
