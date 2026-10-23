@@ -48,6 +48,7 @@ class BuildGameCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--keys", result.stdout)
         self.assertIn("--title-id", result.stdout)
+        self.assertIn("--update", result.stdout)
 
     def test_unknown_target_stops_without_running_a_builder(self):
         result = self.command("unknown-game", "--out", "/tmp/would-be.app")

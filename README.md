@@ -57,12 +57,13 @@ The shared entry lists each workflow and passes its arguments to the existing ve
 ```sh
 python3.14 build_game.py list
 python3.14 build_game.py inspect ~/Games/game.nsp --keys ~/keys/prod.keys
+python3.14 build_game.py inspect ~/Games/base.nsp --update ~/Games/update.nsp --keys ~/keys/prod.keys
 python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
 ```
 
 `totk` is the full XCI/NSP-to-App build described below. `kirby-preview` packages an externally prepared and validated host (`--host`, `--output`); `castlevania` packages externally verified 1.1.0 work and optional shader seed (`--work`, `--out`, `--shader-seed`). Use `python3.14 build_game.py <target> --help` for the original builder's options. The shared command does not add support for unknown games or versions. The original scripts remain available.
 
-`inspect` checks a single XCI/NSP's internal title, hashed CNMT raw version when available, ExeFS hashes, NSO modules and static imports without making an App. A CNMT raw version is not a display version such as "1.2.1". For a combined XCI, `--title-id HEX` selects a base Program; combined update XCIs with multiple Programs are unsupported, so inspect a separate update NSP. Pinned ExeFS profiles are read from each registered game's assets directory; only Tears of the Kingdom currently has them. Its JSON distinguishes an exact pinned ExeFS profile from a code match with different metadata and from an unported title; NCA RSA signatures are not checked, and runtime services, graphics, media, RomFS and performance remain unassessed. Temporary analysis files stay outside the repository and are removed after the command.
+`inspect` checks a single XCI/NSP's internal title, hashed CNMT raw version when available, ExeFS hashes, NSO modules and static imports without making an App. With `--update`, it also requires a separate update NSP for the same base title and keeps both support statuses visible. A CNMT raw version is not a display version such as "1.2.1". For a combined base XCI, `--title-id HEX` selects a Program; combined update XCIs with multiple Programs are unsupported. Pinned ExeFS profiles are read from each registered game's assets directory; only Tears of the Kingdom currently has them. Its JSON distinguishes an exact pinned ExeFS profile from a code match with different metadata and from an unported title; NCA RSA signatures are not checked, and runtime services, graphics, media, RomFS and performance remain unassessed. Temporary analysis files stay outside the repository and are removed after the command.
 
 The offline container, RomFS extraction and indexing, BKTR update merge, NSO inventory, and dependency tools live in `game_tools/`. The former `games/totk/scripts/` paths remain as compatibility commands for existing build scripts; a TOTK build copies the shared tools into its external work folder. The shared ExeFS and BKTR commands require an explicit `--title-id`; BKTR also requires the project's pinned, patched hactool. The shared RomFS command requires `--manifest` for a base game, or `--source` plus `--title-id` for DLC, and always requires `--output`. Their outputs belong in a caller-selected directory outside this source tree. `inspect` still checks code only and does not extract RomFS.
 
@@ -245,12 +246,13 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license: [THIRD_PAR
 ```sh
 python3.14 build_game.py list
 python3.14 build_game.py inspect ~/Games/game.nsp --keys ~/keys/prod.keys
+python3.14 build_game.py inspect ~/Games/base.nsp --update ~/Games/update.nsp --keys ~/keys/prod.keys
 python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
 ```
 
 `totk` 是下文所述从 XCI/NSP 到 App 的完整构建。`kirby-preview` 仍只打包项目外已准备并验证的宿主（`--host`、`--output`）；`castlevania` 仍只打包项目外已验证的 1.1.0 工作目录及可选着色器种子（`--work`、`--out`、`--shader-seed`）。使用 `python3.14 build_game.py <目标> --help` 查看原构建器参数。统一命令不会增加对未知游戏或版本的支持；原脚本继续可用。
 
-`inspect` 对单个 XCI/NSP 核对内部 title、可验证的 CNMT 原始版本值、ExeFS 哈希、NSO 模块及静态导入，不生成 App；CNMT 原始值不能直接换算成“1.2.1”这类显示版本。组合 XCI 可用 `--title-id HEX` 选择本体 Program。含多个 Program 的组合更新 XCI 暂不支持，请用独立更新 NSP 检查。固定 ExeFS 配置从各已登记游戏的资源目录读取；目前只有王国之泪提供了这类配置。JSON 把完整固定的 ExeFS 配置、仅代码匹配但元数据不同、未移植 title 分开报告；NCA RSA 签名未核验，宿主服务、图形、媒体、RomFS 和性能仍标为未评估。临时分析文件在项目外创建并于命令结束时清除。
+`inspect` 对单个 XCI/NSP 核对内部 title、可验证的 CNMT 原始版本值、ExeFS 哈希、NSO 模块及静态导入，不生成 App；加 `--update` 时还要求独立升级档 NSP 与本体 title 一致，并分别保留两份支持状态。CNMT 原始值不能直接换算成“1.2.1”这类显示版本。组合本体 XCI 可用 `--title-id HEX` 选择 Program；含多个 Program 的组合更新 XCI 暂不支持。固定 ExeFS 配置从各已登记游戏的资源目录读取；目前只有王国之泪提供了这类配置。JSON 把完整固定的 ExeFS 配置、仅代码匹配但元数据不同、未移植 title 分开报告；NCA RSA 签名未核验，宿主服务、图形、媒体、RomFS 和性能仍标为未评估。临时分析文件在项目外创建并于命令结束时清除。
 
 离线容器读取、RomFS 提取与索引、BKTR 升级档合并、NSO 盘点和依赖图实现位于 `game_tools/`；原 `games/totk/scripts/` 路径保留兼容命令，TOTK 构建时会把共用工具复制到项目外工作目录，现有构建脚本仍可调用。共用 ExeFS 与 BKTR 命令必须显式传入 `--title-id`；BKTR 还要求项目固定且打过补丁的 hactool。共用 RomFS 命令处理本体时要求 `--manifest`，处理 DLC 时要求 `--source` 和 `--title-id`，且始终要求 `--output`。验证结果写入调用方指定的源码目录外位置。`inspect` 仍只检查代码，不提取 RomFS。
 

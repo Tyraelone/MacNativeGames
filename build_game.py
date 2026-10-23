@@ -32,7 +32,7 @@ TARGETS = {
 def usage() -> str:
     return (
         "Usage: python3 build_game.py list\n"
-        "       python3 build_game.py inspect <game.xci|game.nsp> --keys <prod.keys> [--title-id HEX]\n"
+        "       python3 build_game.py inspect <game.xci|game.nsp> --keys <prod.keys> [--title-id HEX] [--update update.nsp]\n"
         "       python3 build_game.py <target> <existing builder arguments>\n\n"
         "Targets:\n"
         + "".join(f"  {name:<16} {details[1]}\n" for name, details in TARGETS.items())

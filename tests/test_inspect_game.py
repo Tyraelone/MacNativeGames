@@ -1,12 +1,14 @@
 """Read-only identity and support decisions use contents, never names."""
 
 import hashlib
+import io
 import json
 import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -360,6 +362,54 @@ class InspectIdentityTests(unittest.TestCase):
         source.write_bytes(game_image("nsp"))
         with self.assertRaisesRegex(ValueError, "outside the source checkout"):
             inspect_game.inspect(source, self.keys, temp_root=ROOT)
+
+    def test_pair_accepts_same_title_and_keeps_each_support_status(self):
+        base = {"title_id": MARIO, "package_kind": "base", "container": "nsp",
+                "status": "unported_title", "checks": {"cnmt_hash_chain": "pass"}}
+        update = {"title_id": MARIO, "package_kind": "update", "container": "nsp",
+                  "status": "unported_title", "checks": {"cnmt_hash_chain": "not_assessed"}}
+        report = inspect_game.pair_reports(base, update)
+        self.assertEqual(report["pair_identity"], "pass")
+        self.assertEqual(report["title_id"], MARIO)
+        self.assertEqual(report["base"], base)
+        self.assertEqual(report["update"], update)
+        self.assertNotIn("status", report)
+
+    def test_pair_rejects_wrong_role_title_and_update_format(self):
+        base = {"title_id": MARIO, "package_kind": "base", "container": "xci"}
+        update = {"title_id": MARIO, "package_kind": "update", "container": "nsp"}
+        cases = (
+            ({**base, "package_kind": "update"}, update, "base input"),
+            (base, {**update, "package_kind": "base"}, "update input"),
+            (base, {**update, "title_id": "0100F2C0115B6000"}, "title ID"),
+            (base, {**update, "container": "xci"}, "NSP"),
+        )
+        for first, second, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                inspect_game.pair_reports(first, second)
+
+    def test_pair_cli_runs_two_inspections_and_prints_only_success_json(self):
+        base = {"title_id": MARIO, "package_kind": "base", "container": "xci"}
+        update = {"title_id": MARIO, "package_kind": "update", "container": "nsp"}
+        output = io.StringIO()
+        with patch.object(inspect_game, "inspect", side_effect=[base, update]) as worker:
+            with redirect_stdout(output):
+                code = inspect_game.main(["/tmp/base.xci", "--update", "/tmp/update.nsp",
+                                          "--keys", "/tmp/prod.keys", "--title-id", MARIO])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue())["pair_identity"], "pass")
+        self.assertEqual(worker.call_count, 2)
+        self.assertEqual(worker.call_args_list[0].args[2], MARIO)
+        self.assertIsNone(worker.call_args_list[1].args[2])
+
+        output, error = io.StringIO(), io.StringIO()
+        with patch.object(inspect_game, "inspect", side_effect=[base, {**update, "title_id": "0" * 16}]):
+            with redirect_stdout(output), redirect_stderr(error):
+                code = inspect_game.main(["/tmp/base.xci", "--update", "/tmp/update.nsp",
+                                          "--keys", "/tmp/prod.keys", "--title-id", MARIO])
+        self.assertEqual(code, 2)
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("title ID mismatch", error.getvalue())
 
 
 if __name__ == "__main__":

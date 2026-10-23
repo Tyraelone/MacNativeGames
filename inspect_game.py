@@ -250,14 +250,38 @@ def inspect(source: Path, key_file: Path, title_id: str | None = None,
         return report_from_artifacts(identity, manifest, modules, dependencies)
 
 
+def pair_reports(base: dict, update: dict) -> dict:
+    """Verify pairing without promoting either input's runtime support status."""
+    if base["package_kind"] != "base":
+        raise ValueError("Expected a base input")
+    if update["package_kind"] != "update":
+        raise ValueError("Expected an update input")
+    if base["title_id"] != update["title_id"]:
+        raise ValueError("Base and update title ID mismatch")
+    if update["container"] != "nsp":
+        raise ValueError("Update must be a separate NSP")
+    return {"format": 1, "title_id": base["title_id"], "pair_identity": "pass",
+            "base": base, "update": update,
+            "scope": "Input identity and static code only; no RomFS merge or native runtime verification"}
+
+
+def inspect_pair(base: Path, update: Path, key_file: Path,
+                 title_id: str | None = None, *, temp_root: Path | None = None) -> dict:
+    base_report = inspect(base, key_file, title_id, temp_root=temp_root)
+    update_report = inspect(update, key_file, None, temp_root=temp_root)
+    return pair_reports(base_report, update_report)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("game", type=Path, help="one base or update XCI/NSP")
     parser.add_argument("--keys", required=True, type=Path, help="local prod.keys path")
     parser.add_argument("--title-id", help="select a base title from a combined XCI")
+    parser.add_argument("--update", type=Path, help="inspect a separate update NSP with this base")
     args = parser.parse_args(argv)
     try:
-        report = inspect(args.game, args.keys, args.title_id)
+        report = (inspect_pair(args.game, args.update, args.keys, args.title_id)
+                  if args.update else inspect(args.game, args.keys, args.title_id))
     except (ValueError, OSError) as error:
         print(f"Inspect failed: {error}", file=sys.stderr)
         return 2
