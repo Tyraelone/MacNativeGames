@@ -58,7 +58,7 @@ def verify(exefs: Path, runtime: Path, rewrites: Path, output: Path) -> dict:
              "-I", str(ROOT / "runtime_common"), "-I", str(stage),
              *[str(ROOT / f"runtime_common/{name}.c") for name in
                ("symbol_view", "reloc_stream", "reloc_apply", "guest_link",
-                "module_descriptor", "module_link", "module_image")],
+                "module_descriptor", "module_link", "module_image", "module_gate")],
              str(ROOT / "tests/native_module_map_probe.c"), "-o", str(binary)],
             capture_output=True, text=True)
         if result.returncode:
@@ -70,6 +70,10 @@ def verify(exefs: Path, runtime: Path, rewrites: Path, output: Path) -> dict:
         actual = json.loads(result.stdout)
         if set(actual.get("modules", {})) != set(names):
             raise ValueError("Native map probe module set mismatch")
+        expected_gates = sum(len(data["modules"][name]["gates"]) for name in names)
+        if actual.get("gate_count") != expected_gates or \
+                actual.get("gate_queries_per_round") != expected_gates * 1000:
+            raise ValueError("Native map probe gate count mismatch")
         page = os.sysconf("SC_PAGESIZE")
         if actual.get("page_size") != page:
             raise ValueError("Native map probe host page size mismatch")
@@ -81,6 +85,10 @@ def verify(exefs: Path, runtime: Path, rewrites: Path, output: Path) -> dict:
                  "link_ns": actual["link_ns"], "seal_ns": actual["seal_ns"],
                  "permission_check_ns": actual["permission_check_ns"],
                  "page_size": page,
+                 "gate_count": expected_gates,
+                 "gate_queries_per_round": actual["gate_queries_per_round"],
+                 "gate_binary_min_ns": actual["gate_binary_min_ns"],
+                 "gate_linear_min_ns": actual["gate_linear_min_ns"],
                  "modules": {}}
         for name in names:
             expected_hash, expected_stats = expected_link(data, name, bases,
