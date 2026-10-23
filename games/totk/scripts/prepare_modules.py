@@ -22,6 +22,19 @@ def align(value, boundary=4096):
     return (value + boundary - 1) & ~(boundary - 1)
 
 
+def discover_nso_modules(exefs):
+    """Use the NSO files actually present; games need not ship subsdk0."""
+    names = []
+    for path in exefs.iterdir():
+        if path.is_file() and not path.is_symlink():
+            with path.open('rb') as source:
+                if source.read(4) == b'NSO0':
+                    names.append(path.name)
+    check('main' in names, 'ExeFS has no main NSO')
+    first = {'rtld': 0, 'main': 1, 'sdk': 2}
+    return sorted(names, key=lambda name: (first.get(name, 3), name))
+
+
 def prepare(source, destination):
     raw = source.read_bytes()
     check(raw[:4] == b'NSO0' and len(raw) >= 256, 'Expected NSO0')
@@ -219,7 +232,7 @@ def main():
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     inventory = []
-    for name in ['rtld', 'main', 'sdk', 'subsdk0']:
+    for name in discover_nso_modules(args.exefs):
         result = prepare(args.exefs / name, args.output / (name + '.elf'))
         (args.output / (name + '-inventory.json')).write_text(json.dumps(result, indent=2) + '\n')
         summary = {k: result[k] for k in ['module', 'build_id', 'needed', 'segment_hashes_verified']}

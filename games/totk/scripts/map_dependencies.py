@@ -12,8 +12,18 @@ def main():
     ap.add_argument('directory', type=Path)
     ap.add_argument('--output', required=True, type=Path)
     args = ap.parse_args()
+    summaries = json.loads((args.directory / 'modules.json').read_text())
+    if not isinstance(summaries, list) or not all(isinstance(entry, dict) and
+                                                 isinstance(entry.get('module'), str)
+                                                 for entry in summaries):
+        raise ValueError('Invalid modules.json')
+    module_names = [entry['module'] for entry in summaries]
+    if (not module_names or len(module_names) != len(set(module_names)) or
+            any(name in ('', '.', '..') or '/' in name or '\\' in name
+                for name in module_names)):
+        raise ValueError('Invalid module names in modules.json')
     modules = {name: json.loads((args.directory / f'{name}-inventory.json').read_text())
-               for name in ['main', 'rtld', 'sdk', 'subsdk0']}
+               for name in module_names}
     definitions = collections.defaultdict(list)
     for module, inventory in modules.items():
         for symbol in inventory['exports']:
@@ -23,9 +33,12 @@ def main():
     for module, inventory in modules.items():
         imports = inventory['imports']
         names = [s['name'] for s in imports]
-        process = subprocess.run(['/usr/bin/c++filt', '-n'], input='\n'.join(names) + '\n',
-                                 text=True, capture_output=True, check=True)
-        readable = process.stdout.splitlines()
+        if names:
+            process = subprocess.run(['/usr/bin/c++filt', '-n'], input='\n'.join(names) + '\n',
+                                     text=True, capture_output=True, check=True)
+            readable = process.stdout.splitlines()
+        else:
+            readable = []
         assert len(readable) == len(names)
         rows = []
         for symbol, demangled in zip(imports, readable):
