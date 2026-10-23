@@ -10,12 +10,10 @@ import csv
 import gzip
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import re
 import shutil
-import statistics
 import subprocess
 import sys
 import time
@@ -23,6 +21,12 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts/dev'))
 from game_slot import GameSlot
+SHARED_ROOT = next((root for root in (ROOT.parent, ROOT.parent.parent)
+                    if (root / 'game_tools/__init__.py').is_file()), None)
+if SHARED_ROOT is None:
+    raise ModuleNotFoundError('game_tools is missing from the build work folder')
+sys.path.insert(0, str(SHARED_ROOT))
+from game_tools.frame_metrics import summarize_tsv
 
 
 class TakenOver(Exception):
@@ -43,28 +47,9 @@ def last_frame(path):
 
 
 def summarize(path, first, last):
-    frames = {}
-    with path.open(errors='replace') as stream:
-        for line in stream:
-            parts = line.rstrip().split('\t')
-            if len(parts) != 3 or not parts[0].isdigit() or not first <= int(parts[0]) <= last:
-                continue
-            try:
-                value = float(parts[2])
-            except ValueError:
-                continue
-            if math.isfinite(value):
-                frames.setdefault(int(parts[0]), {})[parts[1]] = value
-    def values(name):
-        return [row[name] for row in frames.values() if row.get(name, -1) >= 0]
-    def percentile(data, q):
-        return sorted(data)[min(len(data)-1, int(q*(len(data)-1)))] if data else None
-    elapsed = [x for x in values('@frame_ms') if x > 0]
-    return dict(first_frame=first, last_frame=last, measured_frames=len(elapsed),
-                fps_mean=1000/statistics.mean(elapsed) if elapsed else None,
-                frame_ms_p50=percentile(elapsed, .5), frame_ms_p95=percentile(elapsed, .95),
-                frame_ms_p99=percentile(elapsed, .99), gpu_ms_p50=percentile(values('@gpu_ms'), .5),
-                scope='default mode, fixed camera after warm-up; scene-specific, not a version comparison')
+    report = summarize_tsv(path, first, last)
+    report['scope'] = 'default mode, fixed camera after warm-up; scene-specific, not a version comparison'
+    return report
 
 
 def run_point(args, point):

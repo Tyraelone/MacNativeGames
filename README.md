@@ -66,6 +66,8 @@ python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
 
 The offline container, RomFS extraction and indexing, BKTR update merge, NSO inventory, and dependency tools live in `game_tools/`. The former `games/totk/scripts/` paths remain as compatibility commands for existing build scripts; a TOTK build copies the shared tools into its external work folder. The shared ExeFS and BKTR commands require an explicit `--title-id`; BKTR also requires the project's pinned, patched hactool. The shared RomFS command requires `--manifest` for a base game, or `--source` plus `--title-id` for DLC, and always requires `--output`. Their outputs belong in a caller-selected directory outside this source tree. `inspect` still checks code only and does not extract RomFS.
 
+For an existing external `DM_NVN_TSV` log, `game_tools/frame_metrics.py` reports frame-time distribution and sample coverage without starting a game; see [performance test methods](docs/performance-followups.md). It does not establish a gameplay performance baseline on its own.
+
 **1. Tools** (once): the Xcode command line tools and [Homebrew](https://brew.sh). An internet connection is needed to install the build dependencies and fetch the pinned SPIRV-Cross source:
 
 ```sh
@@ -251,6 +253,8 @@ python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
 `inspect` 对单个 XCI/NSP 核对内部 title、可验证的 CNMT 原始版本值、ExeFS 哈希、NSO 模块及静态导入，不生成 App；CNMT 原始值不能直接换算成“1.2.1”这类显示版本。组合 XCI 可用 `--title-id HEX` 选择本体 Program。含多个 Program 的组合更新 XCI 暂不支持，请用独立更新 NSP 检查。固定 ExeFS 配置从各已登记游戏的资源目录读取；目前只有王国之泪提供了这类配置。JSON 把完整固定的 ExeFS 配置、仅代码匹配但元数据不同、未移植 title 分开报告；NCA RSA 签名未核验，宿主服务、图形、媒体、RomFS 和性能仍标为未评估。临时分析文件在项目外创建并于命令结束时清除。
 
 离线容器读取、RomFS 提取与索引、BKTR 升级档合并、NSO 盘点和依赖图实现位于 `game_tools/`；原 `games/totk/scripts/` 路径保留兼容命令，TOTK 构建时会把共用工具复制到项目外工作目录，现有构建脚本仍可调用。共用 ExeFS 与 BKTR 命令必须显式传入 `--title-id`；BKTR 还要求项目固定且打过补丁的 hactool。共用 RomFS 命令处理本体时要求 `--manifest`，处理 DLC 时要求 `--source` 和 `--title-id`，且始终要求 `--output`。验证结果写入调用方指定的源码目录外位置。`inspect` 仍只检查代码，不提取 RomFS。
+
+项目外现有 `DM_NVN_TSV` 日志可用 `game_tools/frame_metrics.py` 离线汇总帧时间分布和样本覆盖率，方法见[性能复测](docs/performance-followups.md)；单独运行该汇总不构成真实游玩性能基线。
 
 **1. 工具**（只需一次）：Xcode 命令行工具和 [Homebrew](https://brew.sh)。安装构建依赖和获取固定版本的 SPIRV-Cross 源码需要联网：
 
