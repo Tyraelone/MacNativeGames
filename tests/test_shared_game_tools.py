@@ -39,10 +39,18 @@ class SharedGameToolsTests(unittest.TestCase):
             output = root / "exefs"
             result = subprocess.run(
                 [sys.executable, str(ROOT / "game_tools/extract_exefs.py"),
-                 str(source), "--keys", str(keys), "--output", str(output)],
+                 str(source), "--keys", str(keys), "--title-id", "0100F2C0115B6000",
+                 "--output", str(output)],
                 capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((output / "main").read_bytes(), b"synthetic main")
+
+    def test_shared_exefs_command_requires_title_id(self):
+        command = [sys.executable, str(ROOT / "game_tools/extract_exefs.py"),
+                   "base.nsp", "--keys", "keys.txt", "--output", "exefs"]
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("--title-id", result.stderr)
 
     def test_shared_romfs_command_verifies_synthetic_nsp(self):
         with tempfile.TemporaryDirectory(prefix="mng-shared-romfs-") as folder:
@@ -56,7 +64,8 @@ class SharedGameToolsTests(unittest.TestCase):
             exefs = root / "exefs"
             extracted = subprocess.run(
                 [sys.executable, str(ROOT / "game_tools/extract_exefs.py"),
-                 str(source), "--keys", str(keys), "--output", str(exefs)],
+                 str(source), "--keys", str(keys), "--title-id", "0100F2C0115B6000",
+                 "--output", str(exefs)],
                 capture_output=True, text=True, check=False)
             self.assertEqual(extracted.returncode, 0, extracted.stderr)
             output = root / "romfs"

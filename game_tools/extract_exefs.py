@@ -191,13 +191,13 @@ def record_offset(record):
     return record['nca_offset'] if 'nca_offset' in record else record['xci_offset']
 
 
-def main():
+def main(default_title_id=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('game', type=Path, help='base game 1.0.0 (.xci or .nsp)')
     parser.add_argument('--keys', required=True, type=Path)
     parser.add_argument('--update', action='store_true', help='extract update code; caller must verify supported version hashes')
-    parser.add_argument('--title-id', default='0100F2C0115B6000', type=lambda value: value.upper(),
-                        help='expected base title ID; defaults to Tears of the Kingdom')
+    parser.add_argument('--title-id', required=default_title_id is None, default=default_title_id,
+                        type=lambda value: value.upper(), help='expected base title ID')
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     require(not args.output.exists(), 'Output already exists; choose a new directory')
