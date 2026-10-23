@@ -192,6 +192,14 @@ void mtl_pkg_stats(uint64_t *uploads, uint64_t *reuploads);
 uint64_t mtl_pkg_miss(void);
 uint64_t mtl_upload_ns_take(void);   // 取走并清零：上次以来提交线程上预排布贴图上传耗时   // DM_NVN_DIRTYCHECK 诊断：漏检次数   // 预排布贴图：首传次数、因池内容变化而重传次数 | Take and zero: time spent uploading packaged textures on the submit thread since last time   // DM_NVN_DIRTYCHECK diagnostic: number of missed detections   // Packaged textures: number of first uploads, number of re-uploads due to pool content changes
 uint64_t mtl_upload_gpu_ns_take(void);   // 取走并清零：上传命令缓冲的显卡执行耗时（GPUEndTime − GPUStartTime 累加） | Take and zero: GPU execution time of upload command buffers (sum of GPUEndTime − GPUStartTime)
+enum { MTL_COLD_EXEC, MTL_COLD_DRAW, MTL_COLD_TEXTURE_ID, MTL_COLD_TEXTURE,
+       MTL_COLD_PASS, MTL_COLD_ARGS, MTL_COLD_PROGRAM, MTL_COLD_PSO,
+       MTL_COLD_RES_ADD, MTL_COLD_RES_COMMIT, MTL_COLD_UPLOAD_FLUSH,
+       MTL_COLD_PROG_FAST, MTL_COLD_PROG_SERIAL, MTL_COLD_PROG_HASH,
+       MTL_COLD_PROG_VARIANT, MTL_COLD_PROG_SHADER, MTL_COLD_POOL_RES, MTL_COLD_N };
+/* Opt-in DM_COLD_PROFILE=1: inclusive CPU wall time per operation since the prior take. */
+int mtl_cold_profile_take(uint64_t ns[MTL_COLD_N]);
+void mtl_cold_res_counts_take(uint64_t count[3]); /* calls, dirty commits, newly resident pools */
 void mtl_create_stats(uint64_t *lib, uint64_t *pso);   // 累计：提交线程上同步载入的着色器库数、同步新建的渲染 + 计算管线数（预热领用的不算） | Cumulative: number of shader libraries loaded synchronously on the submit thread, number of render + compute pipelines created synchronously (those taken from warm-up do not count)
 // CPU 读贴图：level / layer0 起，按 row / img 字节步长写进 dst
 // CPU texture read: starting at level / layer0, written into dst with row / img byte strides

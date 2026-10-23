@@ -502,7 +502,7 @@ int main(int argc,char **argv) {
 #ifdef CASTLEVANIA_NATIVE_PROBE
  castlevania_link_ro();
 #endif
-#ifndef CASTLEVANIA_NATIVE_PROBE
+#if !defined(CASTLEVANIA_NATIVE_PROBE) && !defined(MARIO_NATIVE_PROBE)
  for(unsigned i=0;i<NM;i++)if(!strcmp(modules[i].name,"main"))runtime_game_patches(&modules[i]);
 #else
  for(unsigned i=0;i<NM;i++)runtime_game_patch_trap_only(&modules[i]);

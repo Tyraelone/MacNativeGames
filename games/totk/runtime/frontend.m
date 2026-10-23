@@ -98,7 +98,9 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 @end
 @implementation TOTKShortcutHelp
 -(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:0.86].CGColor;self.layer.cornerRadius=14;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.2].CGColor;
-#ifdef CASTLEVANIA_NATIVE_PROBE
+#ifdef MARIO_NATIVE_PROBE
+ self.label=[NSTextField labelWithString:@"A / D 移动 · J 确认或跳跃 · K 返回\nQ + E 配对手柄 · 1 显示或隐藏提示"];
+#elif defined(CASTLEVANIA_NATIVE_PROBE)
  self.label=[NSTextField labelWithString:@"方向键移动 · J 确认 · K 返回（长按跳过动画）\n1 性能信息：显示 / 隐藏\n2 帧率：游戏默认 → 屏幕刷新率 → 30 FPS\n3 画面放大：标准 → MetalFX"];
 #else
  self.label=[NSTextField labelWithString:@(TOTK_UI("快捷键说明\n1  显示 / 隐藏所有提示\n2  补帧：关 → 30+30 → 刷新率一半 → 不限帧\n3  画质：MetalFX 2K → 原生 2K → 关闭","Shortcuts\n1  Show / hide all overlays\n2  Frame interpolation: off → 30+30 → half refresh rate → unlimited\n3  Picture: MetalFX 2K → native 2K → off"))];
@@ -170,7 +172,9 @@ void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(),
 static void front_install_menu(void){
  NSMenu *menu=[NSMenu new],*appMenu=[NSMenu new];
  NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
-#ifdef CASTLEVANIA_NATIVE_PROBE
+#ifdef MARIO_NATIVE_PROBE
+ NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@"退出超级马里奥兄弟 惊奇" action:@selector(performClose:) keyEquivalent:@"q"];
+#elif defined(CASTLEVANIA_NATIVE_PROBE)
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@"退出恶魔城：贝尔蒙特的诅咒" action:@selector(performClose:) keyEquivalent:@"q"];
 #else
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@"Quit Tears of the Kingdom" action:@selector(performClose:) keyEquivalent:@"q"];
@@ -193,7 +197,9 @@ void runtime_front_run(void(*callback)(void)){
   window.releasedWhenClosed=NO;   /* a close that waits for a save (windowWillClose) must not free the window the static pointer still holds */
   /* An agent's test game (TOTK_SLOT_OWNER other than user) says so in its title: it plays a save copy and its script closes it. */
   const char *owner=getenv("TOTK_SLOT_OWNER"),*purpose=getenv("TOTK_SLOT_PURPOSE");
-#ifdef CASTLEVANIA_NATIVE_PROBE
+#ifdef MARIO_NATIVE_PROBE
+  window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@"超级马里奥兄弟 惊奇 — 测试局（%s）：%s",owner,purpose&&*purpose?purpose:"test"]:@"超级马里奥兄弟 惊奇 — Ver. 1.2.1";
+#elif defined(CASTLEVANIA_NATIVE_PROBE)
   window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@"恶魔城：贝尔蒙特的诅咒 — 测试局（%s）：%s",owner,purpose&&*purpose?purpose:"test"]:@"恶魔城：贝尔蒙特的诅咒 — Ver. 1.1.0";
 #else
   window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@(TOTK_UI("测试局（%s）Ver. %s：%s — 存档副本，进度不会存进你的存档，脚本会自己关闭","Test session (%s) Ver. %s: %s — save copy, progress is not saved to your save, the script closes it")),owner,TOTK_GAME_VERSION,purpose&&*purpose?purpose:TOTK_UI("代理测试","agent test")]:[NSString stringWithFormat:@"Tears of the Kingdom  Mac — Ver. %s",TOTK_GAME_VERSION];
@@ -214,7 +220,9 @@ void runtime_front_run(void(*callback)(void)){
   metalLayer.framebufferOnly=NO;window.contentView.wantsLayer=YES;window.contentView.layer=metalLayer;
   bootOverlay=[[NSView alloc] initWithFrame:window.contentView.bounds];bootOverlay.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
   bootOverlay.wantsLayer=YES;bootOverlay.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.035 green:0.075 blue:0.09 alpha:1].CGColor;
-#ifdef CASTLEVANIA_NATIVE_PROBE
+#ifdef MARIO_NATIVE_PROBE
+  bootStage=[NSTextField labelWithString:@"正在启动超级马里奥兄弟 惊奇"];
+#elif defined(CASTLEVANIA_NATIVE_PROBE)
   bootStage=[NSTextField labelWithString:@"正在启动恶魔城"];
 #else
   bootStage=[NSTextField labelWithString:@(TOTK_UI("正在启动海拉鲁","Starting Hyrule"))];
@@ -233,7 +241,7 @@ void runtime_front_run(void(*callback)(void)){
      overlay is hidden. Key 1 still controls its requested visibility. */
   [window.contentView addSubview:shortcutHelp positioned:NSWindowBelow relativeTo:bootOverlay];
   [(TOTKShortcutHelp *)shortcutHelp position];
-#ifdef CASTLEVANIA_NATIVE_PROBE
+#if defined(CASTLEVANIA_NATIVE_PROBE) || defined(MARIO_NATIVE_PROBE)
   if(fps_overlay_hints_enabled())fps_overlay_toggle_hints();
   shortcutHelp.hidden=YES;
 #endif

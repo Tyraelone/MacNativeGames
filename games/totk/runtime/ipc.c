@@ -115,6 +115,46 @@ __attribute__((constructor)) static void register_castlevania_fsp(void) {
 }
 #endif
 
+#ifdef MARIO_NATIVE_PROBE
+static void mario_friend_trace(IpcSession *session, const IpcRequest *request, IpcResponse *response) {
+    if (!strcmp(session->name, "hid") && request->cmd == 126 && request->data_size == 12)
+        return; /* StartLrAssignmentMode: host GameController handles pairing. */
+    if (!strcmp(session->name, "hid") && request->cmd == 127 && request->data_size == 12)
+        return; /* StopLrAssignmentMode. */
+    if (!strcmp(session->name, "fsp-srv") && request->cmd == 1 && request->data_size == 8)
+        return; /* SetCurrentProcess: this process is already the sole client. */
+    if (!strcmp(session->name, "fsp-srv") && request->cmd == 1005 && request->data_size == 0) {
+        uint32_t mode = 0; IPC_OUT(response, mode); return; /* GetGlobalAccessLogMode */
+    }
+    if (!strcmp(session->name, "set") && request->cmd == 5 && request->data_size == 4 &&
+        request->nb == 1 && !request->nx && !request->na && !request->nw && !request->nc) {
+        /* ISettingsServer::GetAvailableLanguageCodes2, language order from
+           the Switch settings protocol. Each code is a NUL padded u64. */
+        static const char *codes[] = {"ja", "en-US", "fr", "de", "it", "es", "zh-CN", "ko", "nl",
+            "pt", "ru", "zh-TW", "en-GB", "fr-CA", "es-419", "zh-Hans", "zh-Hant", "pt-BR"};
+        size_t count = sizeof codes / sizeof codes[0];
+        if (count > request->b[0].size / sizeof(uint64_t)) count = request->b[0].size / sizeof(uint64_t);
+        uint64_t *out = ipc_guest(request->b[0].addr, count * sizeof(uint64_t));
+        for (size_t i = 0; i < count; ++i) { out[i] = 0; memcpy(&out[i], codes[i], strlen(codes[i])); }
+        int32_t written = (int32_t)count; IPC_OUT(response, written); return;
+    }
+    if (!strcmp(session->name, "friend:u") && request->cmd == 0 && request->data_size == 0 &&
+        !request->nx && !request->na && !request->nb && !request->nw && !request->nc) {
+        response->move[response->nmove++] =
+            runtime_ipc_new_session("friend:service", mario_friend_trace, NULL, NULL);
+        return;
+    }
+    ipc_unimplemented(session, request);
+}
+__attribute__((constructor)) static void mario_friend_trace_register(void) {
+    runtime_ipc_register("friend:u", mario_friend_trace, NULL, NULL);
+    runtime_ipc_register("ngc:u", mario_friend_trace, NULL, NULL);
+    runtime_ipc_register("set", mario_friend_trace, NULL, NULL);
+    runtime_ipc_register("fsp-srv", mario_friend_trace, NULL, NULL);
+    runtime_ipc_register("hid", mario_friend_trace, NULL, NULL);
+}
+#endif
+
 void runtime_ipc_register(const char *name, IpcHandler handler, IpcOpen open, void (*close)(void *)) {
     pthread_mutex_lock(&registry);
     if (nservices == sizeof services / sizeof *services) runtime_fail("IPC service registry full");

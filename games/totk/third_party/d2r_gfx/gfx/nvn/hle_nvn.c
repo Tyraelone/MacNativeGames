@@ -2739,6 +2739,21 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         static uint64_t pmc, pmp, pmn; uint64_t mc_, mpg_, mn_; nvn_dirty_mp_stats(&mc_, &mpg_, &mn_);
         trow(f, "@mprotect_calls", (double)(mc_ - pmc)); trow(f, "@mprotect_pages", (double)(mpg_ - pmp)); trow(f, "@mprotect_ms", (mn_ - pmn) / 1e6); pmc = mc_; pmp = mpg_; pmn = mn_;
         double up_ms = mtl_upload_ns_take() / 1e6; trow(f, "@upload_ms", up_ms);
+        { uint64_t cold[MTL_COLD_N];
+          if (mtl_cold_profile_take(cold)) {
+              static const char *names[MTL_COLD_N] = {
+                  "@cold_exec_ms", "@cold_draw_ms", "@cold_texture_id_ms", "@cold_texture_ms",
+                  "@cold_pass_ms", "@cold_args_ms", "@cold_program_ms", "@cold_pso_ms",
+                  "@cold_res_add_ms", "@cold_res_commit_ms", "@cold_upload_flush_ms",
+                  "@cold_prog_fast_ms", "@cold_prog_serial_ms", "@cold_prog_hash_ms",
+                  "@cold_prog_variant_ms", "@cold_prog_shader_ms", "@cold_pool_res_ms"
+              };
+              for (int i = 0; i < MTL_COLD_N; i++) trow(f, names[i], cold[i] / 1e6);
+              uint64_t counts[3]; mtl_cold_res_counts_take(counts);
+              trow(f, "@cold_res_commit_calls", (double)counts[0]);
+              trow(f, "@cold_res_actual_commits", (double)counts[1]);
+              trow(f, "@cold_pool_new", (double)counts[2]);
+          } }
         trow(f, "@upload_gpu_ms", mtl_upload_gpu_ns_take() / 1e6);
         // 分账：本帧提交线程同步创建数 + 与 UIMSG 同一时钟的时刻（离线按读取画面区间把帧分成 前端 / 读取 / 局内）
         // Accounting: number of synchronous creations on the submit thread this frame + a timestamp on the same clock as UIMSG (offline, frames are split into front end / loading / in-run by the loading screen intervals)

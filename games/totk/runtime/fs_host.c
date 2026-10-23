@@ -92,7 +92,9 @@ static int castlevania_stat(const char *path,void *info) {
 #define R_INVALID_PATH 0x2ee602u
 #define R_OPEN_MODE 0x307402u
 #define R_APPEND_REQUIRED 0x2f5e02u
-#ifdef CASTLEVANIA_NATIVE_PROBE
+#ifdef MARIO_NATIVE_PROBE
+#define GAME_APPLICATION_ID 0x010015100b514000ULL
+#elif defined(CASTLEVANIA_NATIVE_PROBE)
 #define GAME_APPLICATION_ID 0x0100BA4026E94000ULL
 #else
 #define GAME_APPLICATION_ID 0x0100f2c0115b6000ULL
@@ -254,6 +256,14 @@ static unsigned char save_exists(uint64_t application, const uint64_t *uid) {
     if (getenv("CASTLEVANIA_HLE_TRACE")) fprintf(stderr, "[castlevania] IsSaveDataExisting title=%016llx result=%u\n", (unsigned long long)application, exists);
 #endif
     return exists;
+}
+static unsigned char save_exists_own(const uint64_t *uid) {
+    ready(); uint64_t me[2]; runtime_account_uid(me);
+    return uid && uid[0] == me[0] && uid[1] == me[1];
+}
+static unsigned ensure_save_own(const uint64_t *uid) {
+    ready(); uint64_t me[2]; runtime_account_uid(me);
+    return uid && uid[0] == me[0] && uid[1] == me[1] ? 0 : R_TARGET_NOT_FOUND;
 }
 /* Other titles' save data (e.g. data-link bonuses) is not present on this host. */
 static unsigned mount_save_ro(const char *name, uint64_t application, const uint64_t *uid) {
@@ -508,6 +518,7 @@ void *runtime_fs_host_override(const char *name) {
         {"_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl", read_directory},
         {"_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE", close_directory},
         {"_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE", mount_save},
+        {"_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE", ensure_save_own},
         {"_ZN2nn2fs17MountAddOnContentEPKciPvm", mount_addon},
 #ifdef CASTLEVANIA_NATIVE_PROBE
         {"_ZN2nn2fs16GetFreeSpaceSizeEPlPKc", free_space},
@@ -515,6 +526,7 @@ void *runtime_fs_host_override(const char *name) {
 #endif
         {"_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE", mount_save_ro},
         {"_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE", save_exists},
+        {"_ZN2nn2fs18IsSaveDataExistingERKNS_7account3UidE", save_exists_own},
         {"_ZN2nn2fs21MountTemporaryStorageEPKc", mount_temp}, {"_ZN2nn2fs7UnmountEPKc", unmount}, {"_ZN2nn2fs6CommitEPKc", commit},
         {"_ZN2nn2fs18CreateCacheStorageEill", create_cache}, {"_ZN2nn2fs18DeleteCacheStorageEi", delete_cache},
         {"_ZN2nn2fs17MountCacheStorageEPKci", mount_cache},

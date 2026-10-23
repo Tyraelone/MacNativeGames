@@ -29,6 +29,20 @@ static int refl_rw(NSDictionary *b) {
     NSString *t = b[@"msl_type"]; if (![t isKindOfClass:[NSString class]]) return 0;
     return [t containsString:@"access::write"] || [t containsString:@"access::read_write"];
 }
+/* Texture handles can also come from a user constant buffer. Ryujinx names
+   these fp_t_cb4_34: cbuf slot 4, word offset 0x34. Resolve the handle at
+   replay time, when that buffer's actual contents are known. */
+static int indirect_tex(NSString *name, int sampler, nvn_rbind *r) {
+    const char *s = name.UTF8String, *p = strstr(s, "_t_cb");
+    if (!p) return 0;
+    unsigned cb = 0, word = 0; char suffix[16] = {0};
+    int n = sscanf(p, "_t_cb%u_%x%15s", &cb, &word, suffix);
+    if (n < 2 || cb < 3 || cb > 18 || word > UINT16_MAX / 4) return 0;
+    if (sampler ? (n != 3 || strcmp(suffix, "Smplr")) : n != 2) return 0;
+    r->kind = sampler ? NVN_RB_SAMPU : NVN_RB_TEXU;
+    r->reg = (uint16_t)(cb - 3); r->off = (uint16_t)(word * 4);
+    return 1;
+}
 int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
     memset(o, 0, sizeof *o);
     #define FAIL(...) do { snprintf(err, errlen, __VA_ARGS__); return 1; } while (0)
@@ -44,8 +58,8 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             r->aid = (uint16_t)aid; r->reg = reg < 0 ? 0 : (uint16_t)reg;
             if ([k isEqualToString:@"cbuf"]) r->kind = NVN_RB_CBUF;
             else if ([k isEqualToString:@"samp"]) r->kind = NVN_RB_SAMP;
-            else if ([k isEqualToString:@"samp_tex"]) r->kind = NVN_RB_SAMPT;
-            else if ([k isEqualToString:@"tex"]) { r->kind = NVN_RB_TEX; dummy_kind(b[@"msl_type"], &r->dtt, &r->dpf); }
+            else if ([k isEqualToString:@"samp_tex"]) { if (reg < 0 && indirect_tex(b[@"msl_name"], 1, r)) {} else r->kind = NVN_RB_SAMPT; }
+            else if ([k isEqualToString:@"tex"]) { if (reg < 0 && indirect_tex(b[@"msl_name"], 0, r)) {} else r->kind = NVN_RB_TEX; dummy_kind(b[@"msl_type"], &r->dtt, &r->dpf); }
             else if ([k isEqualToString:@"img"]) { r->kind = NVN_RB_IMG; dummy_kind(b[@"msl_type"], &r->dtt, &r->dpf); r->rw = refl_rw(b); }
             else if ([k isEqualToString:@"tbuf"]) { r->kind = NVN_RB_TBUF; uint8_t tt; dummy_kind(b[@"msl_type"], &tt, &r->dpf); }
             else if ([k isEqualToString:@"sbuf"]) { r->kind = NVN_RB_SBUFP; r->rw = refl_rw(b); }

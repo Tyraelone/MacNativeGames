@@ -52,6 +52,37 @@ Shaders are automatically collected, compiled and cached as you play. Returning 
 
 ## Build the app
 
+The shared entry lists each workflow and passes its arguments to the existing verified builder:
+
+```sh
+python3.14 build_game.py list
+python3.14 build_game.py inspect ~/Games/game.nsp --keys ~/keys/prod.keys
+python3.14 build_game.py inspect ~/Games/base.nsp --update ~/Games/update.nsp --keys ~/keys/prod.keys
+python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
+```
+
+`totk` is the full XCI/NSP-to-App build described below. `kirby-preview` packages an externally prepared and validated host (`--host`, `--output`); `castlevania` packages externally verified 1.1.0 work and optional shader seed (`--work`, `--out`, `--shader-seed`). Use `python3.14 build_game.py <target> --help` for the original builder's options. The shared command does not add support for unknown games or versions. The original scripts remain available.
+
+`inspect` checks a single XCI/NSP's internal title, hashed CNMT raw version when available, ExeFS hashes, NSO modules and static imports without making an App. With `--update`, it also requires a separate update NSP for the same base title and keeps both support statuses visible. A CNMT raw version is not a display version such as "1.2.1". For a combined base XCI, `--title-id HEX` selects a Program; combined update XCIs with multiple Programs are unsupported. Pinned ExeFS profiles are read from each registered game's assets directory; only Tears of the Kingdom currently has them. Its JSON distinguishes an exact pinned ExeFS profile from a code match with different metadata and from an unported title; NCA RSA signatures are not checked, and runtime services, graphics, media, RomFS and performance remain unassessed. Temporary analysis files stay outside the repository and are removed after the command.
+
+The offline container, RomFS extraction and indexing, BKTR update merge, NSO inventory, and dependency tools live in `game_tools/`. The former `games/totk/scripts/` paths remain as compatibility commands for existing build scripts; a TOTK build copies the shared tools into its external work folder. The shared ExeFS and BKTR commands require an explicit `--title-id`; BKTR also requires the project's pinned, patched hactool. The shared RomFS command requires `--manifest` for a base game, or `--source` plus `--title-id` for DLC, and always requires `--output`. Their outputs belong in a caller-selected directory outside this source tree. `inspect` still checks code only and does not extract RomFS.
+
+After ExeFS extraction, `python3 game_tools/rewrite_modules.py --exefs EXEFS --manifest extraction-manifest.json --output EXTERNAL_DIR` probes instruction rewriting for the NSO modules actually present. It verifies the extraction hashes and rejects game-specific patch records; its output is analysis data, not a runnable port.
+
+Run `python3 game_tools/runtime_preflight.py --exefs EXEFS --manifest extraction-manifest.json --rewrites REWRITTEN_DIR --output EXTERNAL_DIR` on that probe output to validate the loadable modules' dynamic symbols, relocations and host gates. It uses the actual module set, writes its tables outside the repository, and excludes `rtld` under the current native loader convention. The result does not bind host services, validate constructors or start a game. The Mario Wonder base sample exposes about 404,000 relocations; generating an additional flat C table would duplicate about 9.7 MB of data, so a generic loader should first evaluate reading the verified image's relocation tables directly.
+
+The independent `runtime_common/reloc_stream.c` iterator now tests that direct-read option. It walks only relocation tables that precede writable data, validates each record, and matches the Python preflight on the Mario Wonder base sample. Existing game loaders do not use it yet; its offline traversal timing does not measure App startup or frames.
+
+The separate `runtime_common/reloc_apply.c` core also applies those records to a writable image using a caller-supplied symbol resolver. With deterministic test symbol addresses, Mario Wonder `main/sdk` matched an independent flat-table writer byte for byte. In one seven-round offline test, the warm minimum for both modules combined was about 1.18 ms for the stream and 0.57 ms for the flat writer. That difference includes callback and validation overhead; table loading, actual host binding and App startup were not timed. No existing loader uses this core yet, and the test does not measure frame time.
+
+The runtime preflight also classifies only symbols referenced by relocations. For the Mario Wonder base `main/sdk`, 27,913 of 27,935 symbolic relocations have a guest-module address candidate; 22 are weak-zero candidates, and none are strong symbols lacking a guest candidate. This is a static linkage inventory, not a check that the weak imports, host overrides, dynamically loaded NVN APIs, or service ABI will work.
+
+Mario Wonder update 1.2.1 now has a separate [native preview packaging route](games/mario_wonder/README.md) based on the verified external build work. The current App was exercised through the opening playable scene; this route still requires the prepared external host and does not yet turn arbitrary game files into an App through `build_game.py`.
+
+The shared NVN-to-Metal host now prepares cached shader-variant metadata before play and batches first-use GPU memory-pool residency at command-buffer submission. In one isolated Mario scene-entry replay on an M1 Pro, the control frame took 81.8 ms and the optimized frame took 30.8 ms; the installed full App measured 34.3 ms, with no new pipeline on those frames. Metadata preparation added about 4–6 seconds to startup in these runs. This reduces a measured first-visit stall but does not guarantee smooth entry into every new scene or cover shader variants absent from the package. The [Mario performance record](games/mario_wonder/README.md#remaining-scene-entry-stutter) gives the test setup, external evidence locations, and remaining limits.
+
+For an existing external `DM_NVN_TSV` log, `game_tools/frame_metrics.py` reports frame-time distribution and sample coverage without starting a game; see [performance test methods](docs/performance-followups.md). It does not establish a gameplay performance baseline on its own.
+
 **1. Tools** (once): the Xcode command line tools and [Homebrew](https://brew.sh). An internet connection is needed to install the build dependencies and fetch the pinned SPIRV-Cross source:
 
 ```sh
@@ -101,7 +132,7 @@ This produces the same **Tears of the Kingdom.app**, containing only the selecte
 
 You do not need to download separate 1.4.3 runtime tables or a shader cache. The build generates the version-specific runtime tables and first-launch shader seed from the game data you provide, then includes the shader seed in the app. The repository supplies the 1.4.3 patch code and verified hashes; only your base game, update and keys are external inputs.
 
-Allow about **40 GB free for a fresh update build**, or **19 GB extra** when the base data is already cached, with the app on the same APFS volume. The merge reads the base NCA through a bounded range of the original container, temporarily extracts the much smaller update NCA, and verifies every IVFC level. It fetches a pinned [hactool](https://github.com/SciresM/hactool) source and builds it with clang/make. Temporary ticket files are private and removed after the merge; key values are not passed on the command line or printed.
+Allow about **40 GB free for a fresh update build**, or **19 GB extra** when the base data is already cached, with the app on the same APFS volume. The merge reads the base NCA through a bounded range of the original container, temporarily extracts the much smaller update NCA, and verifies every IVFC level. It fetches a pinned [hactool](https://github.com/SciresM/hactool) source and builds it with clang/make. Temporary ticket and hactool key files are private and removed after the merge; key values are not passed on the command line or printed.
 
 Saves stay in the same profile folder. Before the first updated launch, the app makes a complete backup beside it, such as `profile-before-1.1.2` or `profile-before-1.4.3`; failure stops startup. Keep this backup if you need to return to an older version—do not assume an updated save is backward compatible.
 
@@ -147,7 +178,7 @@ Language: the game and the launcher's own text (startup screen, shader warm-up p
 - Supports base 1.0.0, or base plus the separate 1.1.2 or 1.4.3 update NSP/NSZ. Other versions, DLC, combined packages, compressed base games (NSZ/XCZ) and personalized tickets remain unsupported. Mac only.
 - No online features, no amiibo.
 - New shaders can cause compilation stutters. Cache reuse reduces these, but does not guarantee stutter-free gameplay.
-- The 47 automated tests cover generated container/update fixtures, relocation formats, work-folder isolation, packaging, desktop migration, shader extraction, first-import cache preservation, 27 native RomFS path cases, and Kirby language selection, shortcut state, guarded frame pacing, derived-shader orientation and GPU keepalive policy. GitHub Actions is configured to run the source tests and native path-parser sanitizers without game data or keys. A complete Mac build also passed with a local XCI-derived NSP fixture and generated common ticket. An independent retail base NSP and gameplay from that input have not yet been tested.
+- The local source suite currently runs 185 tests, including container/update fixtures, shared module and relocation checks, packaging, shader seeds, cold-scene metrics, and game-specific probes; one optional external replay test is skipped without a recorded game run. GitHub Actions is configured to run source tests and native path-parser sanitizers without game data or keys. A complete Mac build also passed with a local XCI-derived NSP fixture and generated common ticket. An independent retail base NSP and gameplay from that input have not yet been tested.
 
 ## How it works
 
@@ -224,6 +255,37 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license: [THIRD_PAR
 
 ## 打包 App
 
+统一入口列出当前工作流，并把参数原样交给已有的受校验构建器：
+
+```sh
+python3.14 build_game.py list
+python3.14 build_game.py inspect ~/Games/game.nsp --keys ~/keys/prod.keys
+python3.14 build_game.py inspect ~/Games/base.nsp --update ~/Games/update.nsp --keys ~/keys/prod.keys
+python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
+```
+
+`totk` 是下文所述从 XCI/NSP 到 App 的完整构建。`kirby-preview` 仍只打包项目外已准备并验证的宿主（`--host`、`--output`）；`castlevania` 仍只打包项目外已验证的 1.1.0 工作目录及可选着色器种子（`--work`、`--out`、`--shader-seed`）。使用 `python3.14 build_game.py <目标> --help` 查看原构建器参数。统一命令不会增加对未知游戏或版本的支持；原脚本继续可用。
+
+`inspect` 对单个 XCI/NSP 核对内部 title、可验证的 CNMT 原始版本值、ExeFS 哈希、NSO 模块及静态导入，不生成 App；加 `--update` 时还要求独立升级档 NSP 与本体 title 一致，并分别保留两份支持状态。CNMT 原始值不能直接换算成“1.2.1”这类显示版本。组合本体 XCI 可用 `--title-id HEX` 选择 Program；含多个 Program 的组合更新 XCI 暂不支持。固定 ExeFS 配置从各已登记游戏的资源目录读取；目前只有王国之泪提供了这类配置。JSON 把完整固定的 ExeFS 配置、仅代码匹配但元数据不同、未移植 title 分开报告；NCA RSA 签名未核验，宿主服务、图形、媒体、RomFS 和性能仍标为未评估。临时分析文件在项目外创建并于命令结束时清除。
+
+离线容器读取、RomFS 提取与索引、BKTR 升级档合并、NSO 盘点和依赖图实现位于 `game_tools/`；原 `games/totk/scripts/` 路径保留兼容命令，TOTK 构建时会把共用工具复制到项目外工作目录，现有构建脚本仍可调用。共用 ExeFS 与 BKTR 命令必须显式传入 `--title-id`；BKTR 还要求项目固定且打过补丁的 hactool。共用 RomFS 命令处理本体时要求 `--manifest`，处理 DLC 时要求 `--source` 和 `--title-id`，且始终要求 `--output`。验证结果写入调用方指定的源码目录外位置。`inspect` 仍只检查代码，不提取 RomFS。
+
+提取 ExeFS 后，可运行 `python3 game_tools/rewrite_modules.py --exefs EXEFS --manifest extraction-manifest.json --output 项目外目录`，按实际存在的 NSO 模块探查指令改写。它核对提取哈希并拒绝游戏专用补丁记录；输出只是分析数据，不是可运行的移植版本。
+
+再运行 `python3 game_tools/runtime_preflight.py --exefs EXEFS --manifest extraction-manifest.json --rewrites 改写目录 --output 项目外目录`，按实际模块集核验待装载模块的动态符号、重定位和宿主门，并将静态表写在项目外；按现有原生装载器约定排除 `rtld`。这一步不绑定宿主服务、不验证构造器，也不启动游戏。马里奥本体约有 40.4 万条重定位；若再生成一份平铺 C 表，会重复约 9.7 MB 数据，后续通用装载器应优先评估直接读取已验证映像中的原始重定位表。
+
+独立的 `runtime_common/reloc_stream.c` 读取器已验证这个方向：只遍历位于可写数据段之前的源表，逐条核对边界，且马里奥本体的结果与 Python 静态检查一致。现有游戏装载器尚未接入它；离线遍历计时不能当作 App 启动或帧时间。
+
+共用的 `runtime_common/reloc_apply.c` 也能通过调用方提供的符号解析函数直接写入这些记录。用固定测试符号地址对马里奥 `main/sdk` 离线对拍时，流式路径与独立平铺表路径得到完全相同的映像字节。一次七轮测试里，两模块热轮次最短耗时合计分别约为 1.18 和 0.57 毫秒；差值包含回调与检查开销，未计入表加载、真实宿主绑定和 App 启动。现有游戏装载器未切换，这项测试也没有验证帧时间。
+
+共用静态预检现只统计实际被重定位引用的符号。马里奥本体 `main/sdk` 的 27,935 条符号重定位中，27,913 条有同包模块地址候选，22 条为弱置零候选，没有缺少同包定义的强符号重定位。这是静态链接线索，不证明弱导入、宿主覆盖、动态获取的 NVN 接口或服务 ABI 可用。
+
+马里奥升级档 1.2.1 现有独立的[原生预览版打包入口](games/mario_wonder/README.md)，使用已验证的项目外构建工作区。当前 App 已实测进入开场可操作场景；该入口仍要求先准备项目外宿主，并不意味着 `build_game.py` 已能从任意游戏文件直接生成 App。
+
+共用 NVN→Metal 宿主现在会在开玩前准备缓存中的着色器变体元数据，并在提交 GPU 命令缓冲时合并首次使用内存池的驻留操作。M1 Pro 上一次隔离的马里奥新场景回放中，对照关键帧为 81.8 毫秒，优化后为 30.8 毫秒；安装的完整 App 测得 34.3 毫秒，这些帧均未新建管线。本次元数据预热使启动多花约 4–6 秒。它缩短了已测的首次进入卡顿，但不能保证所有新场景都流畅，也不能预知包内没有的着色器变体。测试方法、项目外证据和限制见[马里奥性能记录](games/mario_wonder/README.md#remaining-scene-entry-stutter)。
+
+项目外现有 `DM_NVN_TSV` 日志可用 `game_tools/frame_metrics.py` 离线汇总帧时间分布和样本覆盖率，方法见[性能复测](docs/performance-followups.md)；单独运行该汇总不构成真实游玩性能基线。
+
 **1. 工具**（只需一次）：Xcode 命令行工具和 [Homebrew](https://brew.sh)。安装构建依赖和获取固定版本的 SPIRV-Cross 源码需要联网：
 
 ```sh
@@ -273,7 +335,7 @@ python3.14 build_app.py ~/Games/totk.xci -k ~/keys/prod.keys --update ~/Games/1.
 
 无需另外下载 1.4.3 运行时表或着色器缓存。构建流程会根据你提供的游戏数据生成对应版本的运行时表和首启着色器种子，并将种子放进 App。仓库已包含 1.4.3 补丁代码和校验哈希；外部只需准备自己的本体、更新包和密钥。
 
-首次完整更新构建建议预留约 **40 GB**，已缓存本体数据时还需约 **19 GB** 空间，App 需放在同一 APFS 卷。合并时通过原始容器的限定区间读取本体 NCA，只临时提取较小的更新 NCA，并校验全部 IVFC 层；工具会获取固定提交的 [hactool](https://github.com/SciresM/hactool)，用 clang / make 编译。临时票据文件仅当前用户可读，合并结束即清理；密钥值不进入命令行或日志。
+首次完整更新构建建议预留约 **40 GB**，已缓存本体数据时还需约 **19 GB** 空间，App 需放在同一 APFS 卷。合并时通过原始容器的限定区间读取本体 NCA，只临时提取较小的更新 NCA，并校验全部 IVFC 层；工具会获取固定提交的 [hactool](https://github.com/SciresM/hactool)，用 clang / make 编译。临时票据与 hactool 密钥文件仅当前用户可读，合并结束即清理；密钥值不进入命令行或日志。
 
 存档继续保存在原 profile 目录。首次启动更新版前，App 会在旁边完整备份为 `profile-before-1.1.2` 或 `profile-before-1.4.3`；备份失败就不启动。需要回退旧版本时保留并使用这份备份，不能假定新版存档向下兼容。
 
@@ -319,7 +381,7 @@ macOS 能识别的手柄（如 DualSense、Xbox 手柄）会映射为 Switch Pro
 - 支持本体 1.0.0，或本体加单独的 1.1.2 / 1.4.3 更新（NSP/NSZ）。其他版本、DLC、合并包、压缩本体（NSZ/XCZ）和个性化票据仍不支持。平台仅限 Mac。
 - 没有联网功能，没有 amiibo。
 - 首次遇到新着色器可能出现编译卡顿，缓存能减少重复编译，但不保证完全没有卡顿。
-- 47 项自动测试覆盖生成的容器 / 更新样本、重定位格式、工作目录隔离、打包、桌面入口迁移、着色器提取、首次导入的缓存保留、27 个原生 RomFS 路径用例，以及卡比的语言选择、快捷键状态、带原值保护的帧节拍、派生着色器方向和 GPU 保活策略。GitHub Actions 已配置为运行源码测试和路径解析器内存检查，不需要游戏数据或密钥；另使用本地 XCI 构造、附带生成通用票据的 NSP 测试副本完成完整 Mac 打包。尚未验证独立的零售本体 NSP，也未测试从该类输入构建后的实际游玩。
+- 本机源码测试目前运行 185 项，覆盖容器 / 更新样本、共用模块与重定位检查、打包、着色器种子、冷场景指标和各游戏探针；未提供外部游戏回放记录时跳过 1 项可选测试。GitHub Actions 已配置为运行源码测试和路径解析器内存检查，不需要游戏数据或密钥；另使用本地 XCI 构造、附带生成通用票据的 NSP 测试副本完成完整 Mac 打包。尚未验证独立的零售本体 NSP，也未测试从该类输入构建后的实际游玩。
 
 ## 工作原理
 
