@@ -12,6 +12,7 @@ typedef struct {
     uint64_t expected_relocations, applied_relocations;
     MngGuestResolver resolver;
     uint8_t link_attempted;
+    uint8_t link_complete;
 } MngLinkModule;
 
 enum {

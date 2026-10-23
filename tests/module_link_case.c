@@ -99,6 +99,7 @@ static int run(const char *mode) {
     if (!strcmp(mode, "host_error")) {
         int retry = mng_link_all(modules, 2, guests, 2, host, NULL, &failed);
         return result == MNG_LINK_RELOCATION && retry == MNG_LINK_INVALID && failed == 0 &&
+               !modules[0].link_complete && !modules[1].link_complete &&
                modules[0].applied_relocations == 2 &&
                get64(main_image, 0x210) == UINT64_C(0x200000020) &&
                get64(main_image, 0x220) == 0 ? 0 : 6;
@@ -106,6 +107,7 @@ static int run(const char *mode) {
     if (strcmp(mode, "success") || result || failed != 2) return 7;
     int retry = mng_link_all(modules, 2, guests, 2, host, NULL, &failed);
     return retry == MNG_LINK_INVALID && failed == 0 &&
+           modules[0].link_complete && modules[1].link_complete &&
            modules[0].applied_relocations == 4 && modules[1].applied_relocations == 0 &&
            modules[0].resolver.global == 1 && modules[0].resolver.weak_zero == 1 &&
            modules[0].resolver.host_resolved == 1 &&

@@ -60,6 +60,8 @@ int mng_link_all(MngLinkModule *modules, size_t module_count,
             return MNG_LINK_RELOCATION;
         }
     }
+    for (size_t index = 0; index < module_count; ++index)
+        modules[index].link_complete = 1;
     *failed_index = module_count;
     return MNG_LINK_OK;
 }
