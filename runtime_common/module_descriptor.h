@@ -30,7 +30,12 @@ typedef struct {
 
 enum { MNG_DESCRIPTOR_OK = 0, MNG_DESCRIPTOR_INVALID = 1 };
 
-/* Validates source table and gate bounds without allocating a flat table. */
+/* Validates source table and gate bounds, returning a view of immutable symbols. */
+int mng_module_descriptor_open(const MngModuleDescriptor *descriptor,
+                               const uint8_t *image, size_t image_size,
+                               MngSymbolView *symbols, uint64_t *relocation_count);
+
+/* Validation-only wrapper for callers that do not need a symbol view. */
 int mng_module_descriptor_check(const MngModuleDescriptor *descriptor,
                                 const uint8_t *image, size_t image_size,
                                 uint64_t *relocation_count);

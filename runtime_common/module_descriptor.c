@@ -12,10 +12,11 @@ static int digest_valid(const char *digest) {
     return digest[64] == 0;
 }
 
-int mng_module_descriptor_check(const MngModuleDescriptor *descriptor,
-                                const uint8_t *image, size_t image_size,
-                                uint64_t *relocation_count) {
-    if (!descriptor || !image || !relocation_count || !descriptor->name ||
+int mng_module_descriptor_open(const MngModuleDescriptor *descriptor,
+                               const uint8_t *image, size_t image_size,
+                               MngSymbolView *symbols, uint64_t *relocation_count) {
+    if (symbols) memset(symbols, 0, sizeof *symbols);
+    if (!descriptor || !image || !symbols || !relocation_count || !descriptor->name ||
         !digest_valid(descriptor->sha256)) return MNG_DESCRIPTOR_INVALID;
     *relocation_count = 0;
     if (descriptor->file_size != image_size || !descriptor->text_end ||
@@ -32,8 +33,7 @@ int mng_module_descriptor_check(const MngModuleDescriptor *descriptor,
         descriptor->relocations.key_off != descriptor->key_off ||
         descriptor->symbols.symbol_count != descriptor->relocations.symbol_count ||
         (descriptor->gate_count && !descriptor->gates)) return MNG_DESCRIPTOR_INVALID;
-    MngSymbolView view;
-    if (mng_symbol_open(&view, image, image_size, &descriptor->symbols) ||
+    if (mng_symbol_open(symbols, image, image_size, &descriptor->symbols) ||
         mng_reloc_walk(image, image_size, &descriptor->relocations,
                        NULL, NULL, relocation_count)) return MNG_DESCRIPTOR_INVALID;
     for (uint32_t index = 0; index < descriptor->gate_count; ++index) {
@@ -48,4 +48,12 @@ int mng_module_descriptor_check(const MngModuleDescriptor *descriptor,
             return MNG_DESCRIPTOR_INVALID;
     }
     return MNG_DESCRIPTOR_OK;
+}
+
+int mng_module_descriptor_check(const MngModuleDescriptor *descriptor,
+                                const uint8_t *image, size_t image_size,
+                                uint64_t *relocation_count) {
+    MngSymbolView symbols;
+    return mng_module_descriptor_open(descriptor, image, image_size,
+                                      &symbols, relocation_count);
 }

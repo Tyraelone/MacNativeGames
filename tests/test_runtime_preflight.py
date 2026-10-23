@@ -16,6 +16,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RuntimePreflightTests(unittest.TestCase):
+    def test_descriptor_link_matches_independent_full_image_writer(self):
+        from game_tools import verify_descriptor_link
+
+        for name in ("main", "sdk"):
+            path = self.rewrites / name / f"{name}.patched.bin"
+            image = bytearray(path.read_bytes())
+            image[0x2600:0x2618] = image[0x3200:0x3218]
+            struct.pack_into("<Q", image, 0x3100 + 5 * 16 + 8, 0x2600)
+            if name == "sdk":
+                struct.pack_into("<H", image, 0x2300 + 24 + 6, 1)
+                struct.pack_into("<Q", image, 0x2300 + 24 + 8, 0x100)
+            path.write_bytes(image)
+            self.rewrite_rows[name]["patched_sha256"] = hashlib.sha256(image).hexdigest()
+        self.write_reports()
+        runtime_preflight.prepare(self.exefs, self.manifest, self.rewrites, self.output)
+        proof = verify_descriptor_link.verify(self.exefs, self.output, self.rewrites,
+                                              self.work / "descriptor-link-proof.json", rounds=2)
+        self.assertEqual(proof["module_order"], ["main", "sdk"])
+        self.assertEqual(proof["modules"]["main"]["global"], 1)
+        self.assertEqual(proof["modules"]["sdk"]["local"], 1)
+
     def test_compact_descriptor_compiles_and_validates_source_tables(self):
         from game_tools import emit_runtime_descriptor
 
