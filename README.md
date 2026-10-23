@@ -62,7 +62,7 @@ python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
 
 `totk` is the full XCI/NSP-to-App build described below. `kirby-preview` packages an externally prepared and validated host (`--host`, `--output`); `castlevania` packages externally verified 1.1.0 work and optional shader seed (`--work`, `--out`, `--shader-seed`). Use `python3.14 build_game.py <target> --help` for the original builder's options. The shared command does not add support for unknown games or versions. The original scripts remain available.
 
-`inspect` checks a single XCI/NSP's internal title, ExeFS hashes, NSO modules and static imports without making an App. For a combined XCI, `--title-id HEX` selects a base Program; combined update XCIs with multiple Programs are unsupported, so inspect a separate update NSP. Pinned ExeFS profiles are read from each registered game's assets directory; only Tears of the Kingdom currently has them. Its JSON distinguishes an exact pinned ExeFS profile from a code match with different metadata and from an unported title; NCA RSA signatures are not checked, and runtime services, graphics, media, RomFS and performance remain unassessed. Temporary analysis files stay outside the repository and are removed after the command.
+`inspect` checks a single XCI/NSP's internal title, hashed CNMT raw version when available, ExeFS hashes, NSO modules and static imports without making an App. A CNMT raw version is not a display version such as "1.2.1". For a combined XCI, `--title-id HEX` selects a base Program; combined update XCIs with multiple Programs are unsupported, so inspect a separate update NSP. Pinned ExeFS profiles are read from each registered game's assets directory; only Tears of the Kingdom currently has them. Its JSON distinguishes an exact pinned ExeFS profile from a code match with different metadata and from an unported title; NCA RSA signatures are not checked, and runtime services, graphics, media, RomFS and performance remain unassessed. Temporary analysis files stay outside the repository and are removed after the command.
 
 **1. Tools** (once): the Xcode command line tools and [Homebrew](https://brew.sh). An internet connection is needed to install the build dependencies and fetch the pinned SPIRV-Cross source:
 
@@ -246,7 +246,7 @@ python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
 
 `totk` 是下文所述从 XCI/NSP 到 App 的完整构建。`kirby-preview` 仍只打包项目外已准备并验证的宿主（`--host`、`--output`）；`castlevania` 仍只打包项目外已验证的 1.1.0 工作目录及可选着色器种子（`--work`、`--out`、`--shader-seed`）。使用 `python3.14 build_game.py <目标> --help` 查看原构建器参数。统一命令不会增加对未知游戏或版本的支持；原脚本继续可用。
 
-`inspect` 对单个 XCI/NSP 核对内部 title、ExeFS 哈希、NSO 模块及静态导入，不生成 App；组合 XCI 可用 `--title-id HEX` 选择本体 Program。含多个 Program 的组合更新 XCI 暂不支持，请用独立更新 NSP 检查。固定 ExeFS 配置从各已登记游戏的资源目录读取；目前只有王国之泪提供了这类配置。JSON 把完整固定的 ExeFS 配置、仅代码匹配但元数据不同、未移植 title 分开报告；NCA RSA 签名未核验，宿主服务、图形、媒体、RomFS 和性能仍标为未评估。临时分析文件在项目外创建并于命令结束时清除。
+`inspect` 对单个 XCI/NSP 核对内部 title、可验证的 CNMT 原始版本值、ExeFS 哈希、NSO 模块及静态导入，不生成 App；CNMT 原始值不能直接换算成“1.2.1”这类显示版本。组合 XCI 可用 `--title-id HEX` 选择本体 Program。含多个 Program 的组合更新 XCI 暂不支持，请用独立更新 NSP 检查。固定 ExeFS 配置从各已登记游戏的资源目录读取；目前只有王国之泪提供了这类配置。JSON 把完整固定的 ExeFS 配置、仅代码匹配但元数据不同、未移植 title 分开报告；NCA RSA 签名未核验，宿主服务、图形、媒体、RomFS 和性能仍标为未评估。临时分析文件在项目外创建并于命令结束时清除。
 
 **1. 工具**（只需一次）：Xcode 命令行工具和 [Homebrew](https://brew.sh)。安装构建依赖和获取固定版本的 SPIRV-Cross 源码需要联网：
 

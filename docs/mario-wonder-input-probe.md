@@ -16,3 +16,5 @@
 尚未验证：本体 RomFS 完整性、升级档 BKTR 合并、游戏服务调用、NVN 着色器阶段、指令改写、启动、画面和帧时间。现有正式构建器仍按王国之泪的版本哈希、模块列表和资源规则工作；它不能把本样本直接打包为受支持的 App。提取器验证了 FS header、ExeFS 哈希表与每个 ExeFS 数据块，没有验证 RSA 签名。
 
 统一只读入口 `build_game.py inspect <NSP> --keys <prod.keys>` 已对本体和升级档实际运行。两者均报告 `unported_title`、模块 `rtld/main/sdk`；容器头、ExeFS 哈希链、NSO 段哈希为 `pass`，RomFS、宿主服务、NVN、媒体、改写、游玩性能为 `not_assessed`。小型 JSON 报告保存在项目外 `/tmp/mng-mario-probe-20261023.8fLZdV/{base,update}/inspect-report.json`；检查器的独立临时工作目录已自动清理。同一入口在已有王国之泪本体 NSP 上发现四个 NSO 均匹配固定 1.0.0 代码，但 `main.npdm` 不同，因此报告 `known_title_unknown_version` 与 `code_match`，没有把该包误报为完整的固定配置。
+
+后续直接解析经哈希验证的 CNMT：本体的原始版本值为 `0`，升级档为 `327680`（`0x50000`），内容类型分别为 `application`、`patch`。这些是内部整数，不能据此宣称文件名中的“1.2.1”已获独立证明。新版报告示例在项目外 `/tmp/mng-inspect-mario-cnmt-20261023.json`。

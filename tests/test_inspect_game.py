@@ -1,6 +1,8 @@
 """Read-only identity and support decisions use contents, never names."""
 
+import hashlib
 import json
+import struct
 import subprocess
 import sys
 import tempfile
@@ -8,15 +10,56 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from test_game_containers import (AREA, HEADER, TITLE, TITLEKEK, game_image,
-                                  nca, partition)
+from cryptography.hazmat.primitives.ciphers import modes
+from test_game_containers import (AREA, CONTENT, HEADER, TITLE, TITLEKEK,
+                                  encrypt, game_image, nca, partition)
 from test_updates import update_nca
+from extract_exefs import decrypt
 
 import inspect_game
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MARIO = "010015100B514000"
+
+
+def cnmt_nca(title: int, version: int, content_type: int = 0x81) -> bytes:
+    """A tiny encrypted Meta NCA with a hashed CNMT PFS0."""
+    cnmt = bytearray(0x20)
+    struct.pack_into("<QI", cnmt, 0, title, version)
+    cnmt[12] = content_type
+    pfs = partition([(f"Patch_{title:016x}.cnmt", bytes(cnmt))])
+    digest = hashlib.sha256(pfs).digest()
+    fs = bytearray(512)
+    fs[2:5] = bytes([1, 2, 3])
+    fs[8:40] = hashlib.sha256(digest).digest()
+    struct.pack_into("<IIQQQQ", fs, 0x28, 4096, 2, 0, 32, 512, len(pfs))
+    body = digest.ljust(512, b"\0") + pfs.ljust((len(pfs) + 511) // 512 * 512, b"\0")
+    template = nca(title=title, content=1)
+    header = bytearray(b"".join(
+        decrypt(HEADER, modes.XTS(i.to_bytes(16, "big")),
+                template[i * 512:(i + 1) * 512]) for i in range(6)))
+    struct.pack_into("<II", header, 0x240, 0xc00 // 512, (0xc00 + len(body)) // 512)
+    struct.pack_into("<Q", header, 0x208, 0xc00 + len(body))
+    header[0x400:0x600] = fs
+    header[0x280:0x2a0] = hashlib.sha256(fs).digest()
+    encrypted_header = b"".join(
+        encrypt(HEADER, modes.XTS(i.to_bytes(16, "big")), header[i * 512:(i + 1) * 512])
+        for i in range(6))
+    encrypted_body = encrypt(CONTENT, modes.CTR(bytes(8) + (0xc00 // 16).to_bytes(8, "big")),
+                             body)
+    return encrypted_header + encrypted_body
+
+
+def rewrite_meta_header(data: bytes, change) -> bytes:
+    header = bytearray(b"".join(
+        decrypt(HEADER, modes.XTS(i.to_bytes(16, "big")), data[i * 512:(i + 1) * 512])
+        for i in range(6)))
+    change(header)
+    encrypted_header = b"".join(
+        encrypt(HEADER, modes.XTS(i.to_bytes(16, "big")), header[i * 512:(i + 1) * 512])
+        for i in range(6))
+    return encrypted_header + data[0xc00:]
 
 
 class InspectIdentityTests(unittest.TestCase):
@@ -48,6 +91,85 @@ class InspectIdentityTests(unittest.TestCase):
         self.assertEqual(result["title_id"], f"{TITLE:016X}")
         self.assertEqual(result["package_kind"], "update")
         self.assertEqual(result["metadata_title_ids"], [f"{TITLE + 0x800:016X}"])
+
+    def test_verified_cnmt_reports_raw_version_and_rejects_modified_bytes(self):
+        source = self.folder / "update.nsp"
+        metadata = cnmt_nca(TITLE + 0x800, 0x50000)
+        source.write_bytes(partition([
+            ("program.nca", update_nca(managed=False)),
+            ("patch.cnmt.nca", metadata),
+        ]))
+        result = inspect_game.select_program(source, self.keys)
+        self.assertEqual(result["cnmt_version_raw"], 0x50000)
+        self.assertEqual(result["cnmt_content_type"], "patch")
+        damaged = bytearray(metadata)
+        damaged[0xc00 + 512 + 20] ^= 1
+        source.write_bytes(partition([
+            ("program.nca", update_nca(managed=False)),
+            ("patch.cnmt.nca", bytes(damaged)),
+        ]))
+        with self.assertRaisesRegex(ValueError, "CNMT block hash mismatch"):
+            inspect_game.select_program(source, self.keys)
+
+    def test_modified_cnmt_layout_byte_cannot_skip_header_hash_check(self):
+        metadata = rewrite_meta_header(
+            cnmt_nca(TITLE + 0x800, 0x50000),
+            lambda header: header.__setitem__(0x402, header[0x402] ^ 1))
+        source = self.folder / "changed-header.nsp"
+        source.write_bytes(partition([
+            ("program.nca", update_nca(managed=False)),
+            ("patch.cnmt.nca", metadata),
+        ]))
+        with self.assertRaisesRegex(ValueError, "CNMT FS header hash mismatch"):
+            inspect_game.select_program(source, self.keys)
+
+    def test_other_hashed_cnmt_layout_is_not_assessed(self):
+        def change(header):
+            struct.pack_into("<I", header, 0x400 + 0x2c, 3)
+            header[0x280:0x2a0] = hashlib.sha256(header[0x400:0x600]).digest()
+
+        metadata = rewrite_meta_header(cnmt_nca(TITLE + 0x800, 0x50000), change)
+        source = self.folder / "other-layout.nsp"
+        source.write_bytes(partition([
+            ("program.nca", update_nca(managed=False)),
+            ("patch.cnmt.nca", metadata),
+        ]))
+        result = inspect_game.select_program(source, self.keys)
+        self.assertIsNone(result["cnmt_version_raw"])
+
+    def test_cnmt_hash_table_and_content_type_are_checked(self):
+        source = self.folder / "update.nsp"
+        metadata = bytearray(cnmt_nca(TITLE + 0x800, 0x50000))
+        metadata[0xc00] ^= 1
+        source.write_bytes(partition([
+            ("program.nca", update_nca(managed=False)),
+            ("patch.cnmt.nca", bytes(metadata)),
+        ]))
+        with self.assertRaisesRegex(ValueError, "CNMT hash-table mismatch"):
+            inspect_game.select_program(source, self.keys)
+        source.write_bytes(partition([
+            ("program.nca", update_nca(managed=False)),
+            ("patch.cnmt.nca", cnmt_nca(TITLE + 0x800, 0x50000,
+                                          content_type=0x80)),
+        ]))
+        with self.assertRaisesRegex(ValueError, "CNMT identity does not match"):
+            inspect_game.select_program(source, self.keys)
+
+    def test_base_cnmt_version_zero_is_still_verified(self):
+        source = self.folder / "base.nsp"
+        source.write_bytes(partition([
+            ("program.nca", nca()),
+            ("application.cnmt.nca", cnmt_nca(TITLE, 0, content_type=0x80)),
+        ]))
+        identity = inspect_game.select_program(source, self.keys)
+        self.assertEqual(identity["cnmt_version_raw"], 0)
+        self.assertEqual(identity["cnmt_content_type"], "application")
+        report = inspect_game.report_from_artifacts(
+            identity, {"files": [{"name": "main", "sha256": "a" * 64}]},
+            [{"module": "main", "build_id": "b" * 64,
+              "segment_hashes_verified": True}],
+            {"modules": {"main": {"group_counts": {}}}})
+        self.assertEqual(report["checks"]["cnmt_hash_chain"], "pass")
 
     def test_combined_package_requires_explicit_title_selection(self):
         other = 0x0100BA4026E94000

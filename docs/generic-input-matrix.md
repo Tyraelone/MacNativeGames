@@ -13,6 +13,8 @@
 
 六份输入的容器头、ExeFS 哈希链与 NSO 段哈希检查均通过。原始输入在 `~/Downloads/共享/`，小型 JSON 报告依次保存在 `/tmp/mng-inspect-totk-final-20261023.json`、`/tmp/mng-multigame-kirby-20261023.json`、`/tmp/mng-multigame-castlevania-base-20261023.json`、`/tmp/mng-multigame-castlevania-update-20261023.json`、`/tmp/mng-inspect-final-base-20261023.json`、`/tmp/mng-inspect-final-update-20261023.json`。这些 `/tmp` 文件可能被系统清理，可从原始输入重跑。
 
+随后用完整 `inspect` 命令对同一批原始输入重新运行，六份报告的 `cnmt_hash_chain` 均为 `pass`：四份本体原始版本整数均为 `0`，恶魔城更新包为 `65536`（`0x10000`），马里奥更新包为 `327680`（`0x50000`）。两份更新包的内容类型均为 `patch`。这些整数来自哈希校验通过的元数据，不等于文件名所写的语义显示版本。新版六份 JSON 均位于 `/tmp/mng-cnmt-<输入名>-20261023.json`，其中输入名依次为 `totk`、`kirby`、`castlevania-base`、`castlevania-update`、`mario-base`、`mario-update`。
+
 另一个标称“恶魔城本体 1.1.0”的独立 NSP 被 NCA3 区段边界校验拒绝：Program NCA 的容器条目及 NCA 头大小均为 558,891,008 字节，而头内区段结束位置达到 3,058,843,648 字节。不能把它当作已验证的标准 NSP，也不能仅凭此断定游戏版本本身有问题；本次矩阵使用通过检查的组合 XCI 本体和独立更新 NSP。
 
 导入数是 `main` 中的静态符号数量，不能推断运行路径、ABI 兼容性或宿主服务覆盖率。`known_title_unknown_version` 也不表示原始输入可直接构建：卡比和恶魔城的现有工作流仍需项目外已验证宿主或工作目录。此轮没有检查 RomFS、NCA RSA 签名、运行时服务、NVN 实际着色器阶段、启动画面或帧时间；这些需要后续实机验证。
