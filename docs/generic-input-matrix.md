@@ -27,6 +27,8 @@ BKTR 合并实现现位于 `game_tools/extract_update_romfs.py`；共用命令�
 
 `build_game.py inspect BASE --update UPDATE --keys PROD.KEYS` 现可在合并前核对本体与独立升级档的角色、同一基础 title ID 和各自的代码检查结果。用马里奥两份原始 NSP 运行，配对身份通过，title ID 为 `010015100B514000`，两份 CNMT 哈希链均通过；两份支持状态仍均为 `unported_title`。只读 JSON 在项目外 `/tmp/mng-mario-paired-inspect-20261023.json`，不证明升级档已可构建或运行。
 
+共用 NSO 改写探针按实际模块集合处理马里奥本体的 `rtld`、`main`、`sdk`，不要求 `subsdk0`。它核对原 ExeFS 清单的大小与哈希，强制关掉游戏私有规则并拒绝定点补丁记录；三模块均成功且定点记录为零。摘要在 `/tmp/mng-mario-shared-rewrite-proof-20261023.json`，大型改写输出已清理。此项只证明指令改写阶段可复用，不证明装载、服务语义或原生运行。
+
 另一个标称“恶魔城本体 1.1.0”的独立 NSP 被 NCA3 区段边界校验拒绝：Program NCA 的容器条目及 NCA 头大小均为 558,891,008 字节，而头内区段结束位置达到 3,058,843,648 字节。不能把它当作已验证的标准 NSP，也不能仅凭此断定游戏版本本身有问题；本次矩阵使用通过检查的组合 XCI 本体和独立更新 NSP。
 
 导入数是 `main` 中的静态符号数量，不能推断运行路径、ABI 兼容性或宿主服务覆盖率。`known_title_unknown_version` 也不表示原始输入可直接构建：卡比和恶魔城的现有工作流仍需项目外已验证宿主或工作目录。六份 `inspect` 报告没有检查 RomFS；单独的马里奥本体 RomFS 验证如上。NCA RSA 签名、运行时服务、NVN 实际着色器阶段、启动画面或帧时间尚未检查；这些需要后续实机验证。

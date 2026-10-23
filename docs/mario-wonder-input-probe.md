@@ -24,3 +24,5 @@
 随后用项目固定提交的 hactool 和原始本体、升级档、`prod.keys` 运行 BKTR 合并。hactool 对原始密钥文件中无关但长度不合其格式的项报错；构建脚本现将它需要的有效 NCA 密钥类别写入权限为 `0600` 的项目外临时文件，并在合并后清理。使用原始 `prod.keys` 重跑，BKTR 和六层 IVFC 均通过：合并 RomFS 为 3,732,302,808 字节、19,034 个文件，SHA-256 `e68e6b26c3d4edbdc879a54edcaf70c0be7877d881eb41a42cfcdb1d3b8d328b`。该结果与先前手工筛选密钥的独立运行一致；大型临时输出已清理，摘要位于 `/tmp/mng-mario-bktr-fixed-proof-20261023.json`。本机验证使用 Xcode 26.5 SDK；系统默认的命令行工具 SDK 在链接 hactool 时失败。此验证仍不证明马里奥可原生运行。
 
 BKTR 合并器移到 `game_tools/` 后，以要求显式 `--title-id 010015100B514000` 的新共用命令和同一批原始输入再次完整运行。固定 hactool 的构建及合并共耗时约 47.2 秒；六层 IVFC、3,732,302,808 字节、19,034 个文件和上述 SHA-256 再次一致。临时 hactool、合并输出和密钥文件均已清理，仅保留小型摘要 `/tmp/mng-mario-shared-bktr-proof-20261023.json`。该时间是一次离线工具运行，不是游戏启动或帧时间。
+
+现有 ARM64 改写器对本体 ExeFS 的 `rtld`、`main`、`sdk` 三个 NSO 都完成了指令改写。随后共用 `game_tools/rewrite_modules.py` 先逐一比对提取清单的大小和 SHA-256，再复验相同三模块；`rtld`、`sdk` 分别登记 4、100 个宿主门，`main` 为 0，三者的定点剪口、参数改写和观测门均为 0。大型改写结果在项目外临时目录验证后已清理，小型摘要位于 `/tmp/mng-mario-shared-rewrite-proof-20261023.json`。这个结果仅说明现有改写器能处理该批指令；尚未生成通用装载表，也未验证重定位、宿主服务、NVN、启动或帧时间。

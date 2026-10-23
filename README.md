@@ -67,6 +67,8 @@ python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
 
 The offline container, RomFS extraction and indexing, BKTR update merge, NSO inventory, and dependency tools live in `game_tools/`. The former `games/totk/scripts/` paths remain as compatibility commands for existing build scripts; a TOTK build copies the shared tools into its external work folder. The shared ExeFS and BKTR commands require an explicit `--title-id`; BKTR also requires the project's pinned, patched hactool. The shared RomFS command requires `--manifest` for a base game, or `--source` plus `--title-id` for DLC, and always requires `--output`. Their outputs belong in a caller-selected directory outside this source tree. `inspect` still checks code only and does not extract RomFS.
 
+After ExeFS extraction, `python3 game_tools/rewrite_modules.py --exefs EXEFS --manifest extraction-manifest.json --output EXTERNAL_DIR` probes instruction rewriting for the NSO modules actually present. It verifies the extraction hashes and rejects game-specific patch records; its output is analysis data, not a runnable port.
+
 For an existing external `DM_NVN_TSV` log, `game_tools/frame_metrics.py` reports frame-time distribution and sample coverage without starting a game; see [performance test methods](docs/performance-followups.md). It does not establish a gameplay performance baseline on its own.
 
 **1. Tools** (once): the Xcode command line tools and [Homebrew](https://brew.sh). An internet connection is needed to install the build dependencies and fetch the pinned SPIRV-Cross source:
@@ -255,6 +257,8 @@ python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
 `inspect` 对单个 XCI/NSP 核对内部 title、可验证的 CNMT 原始版本值、ExeFS 哈希、NSO 模块及静态导入，不生成 App；加 `--update` 时还要求独立升级档 NSP 与本体 title 一致，并分别保留两份支持状态。CNMT 原始值不能直接换算成“1.2.1”这类显示版本。组合本体 XCI 可用 `--title-id HEX` 选择 Program；含多个 Program 的组合更新 XCI 暂不支持。固定 ExeFS 配置从各已登记游戏的资源目录读取；目前只有王国之泪提供了这类配置。JSON 把完整固定的 ExeFS 配置、仅代码匹配但元数据不同、未移植 title 分开报告；NCA RSA 签名未核验，宿主服务、图形、媒体、RomFS 和性能仍标为未评估。临时分析文件在项目外创建并于命令结束时清除。
 
 离线容器读取、RomFS 提取与索引、BKTR 升级档合并、NSO 盘点和依赖图实现位于 `game_tools/`；原 `games/totk/scripts/` 路径保留兼容命令，TOTK 构建时会把共用工具复制到项目外工作目录，现有构建脚本仍可调用。共用 ExeFS 与 BKTR 命令必须显式传入 `--title-id`；BKTR 还要求项目固定且打过补丁的 hactool。共用 RomFS 命令处理本体时要求 `--manifest`，处理 DLC 时要求 `--source` 和 `--title-id`，且始终要求 `--output`。验证结果写入调用方指定的源码目录外位置。`inspect` 仍只检查代码，不提取 RomFS。
+
+提取 ExeFS 后，可运行 `python3 game_tools/rewrite_modules.py --exefs EXEFS --manifest extraction-manifest.json --output 项目外目录`，按实际存在的 NSO 模块探查指令改写。它核对提取哈希并拒绝游戏专用补丁记录；输出只是分析数据，不是可运行的移植版本。
 
 项目外现有 `DM_NVN_TSV` 日志可用 `game_tools/frame_metrics.py` 离线汇总帧时间分布和样本覆盖率，方法见[性能复测](docs/performance-followups.md)；单独运行该汇总不构成真实游玩性能基线。
 
