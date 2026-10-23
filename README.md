@@ -52,6 +52,15 @@ Shaders are automatically collected, compiled and cached as you play. Returning 
 
 ## Build the app
 
+The shared entry lists each workflow and passes its arguments to the existing verified builder:
+
+```sh
+python3.14 build_game.py list
+python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
+```
+
+`totk` is the full XCI/NSP-to-App build described below. `kirby-preview` packages an externally prepared and validated host (`--host`, `--output`); `castlevania` packages externally verified 1.1.0 work and optional shader seed (`--work`, `--out`, `--shader-seed`). Use `python3.14 build_game.py <target> --help` for the original builder's options. The shared command does not add support for unknown games or versions. The original scripts remain available.
+
 **1. Tools** (once): the Xcode command line tools and [Homebrew](https://brew.sh). An internet connection is needed to install the build dependencies and fetch the pinned SPIRV-Cross source:
 
 ```sh
@@ -223,6 +232,15 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license: [THIRD_PAR
 - 使用 NSP 时：除不依赖票据的 NCA 外，包内必须包含通用票据。NSP 不含系统共享字体，需要通过 `--firmware` 指定已解包的固件 NCA 目录，或通过 `--shared-fonts` 提供以前提取的字体。六个字体必须符合本项目已验证的哈希；工作目录中已有且校验通过的字体会自动复用。
 
 ## 打包 App
+
+统一入口列出当前工作流，并把参数原样交给已有的受校验构建器：
+
+```sh
+python3.14 build_game.py list
+python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
+```
+
+`totk` 是下文所述从 XCI/NSP 到 App 的完整构建。`kirby-preview` 仍只打包项目外已准备并验证的宿主（`--host`、`--output`）；`castlevania` 仍只打包项目外已验证的 1.1.0 工作目录及可选着色器种子（`--work`、`--out`、`--shader-seed`）。使用 `python3.14 build_game.py <目标> --help` 查看原构建器参数。统一命令不会增加对未知游戏或版本的支持；原脚本继续可用。
 
 **1. 工具**（只需一次）：Xcode 命令行工具和 [Homebrew](https://brew.sh)。安装构建依赖和获取固定版本的 SPIRV-Cross 源码需要联网：
 
