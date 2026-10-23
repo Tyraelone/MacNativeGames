@@ -5313,7 +5313,7 @@ static size_t arena_alloc(size_t n, id<MTLBuffer> *buf) {
 // ---------- 绘制状态 ----------
 // ---------- Draw state ----------
 static struct {
-    const prog_t *prog;
+    const prog_t *prog, *compute_prog;
     blend_st blend[8]; color_st color; chmask_st chmask; ms_st ms; poly_st poly; ds_st ds;
     va_st attr[16]; int nattr; vs_st stream[16]; int nstream;
     NVNbufferRange vbuf[16];
@@ -7063,25 +7063,40 @@ static int first_draw_covers(int i, id<MTLTexture> t, NSUInteger level) {
                      S.has_vp, vp, R.has_sc, sc, (long)MAX(t.width >> level, 1), (long)MAX(t.height >> level, 1));
 }
 
-static int masked_bind_on(void) {
-#ifdef CASTLEVANIA_NATIVE_PROBE
+static int stage_bind_on(void) {
     static int enabled = -1;
-    if (enabled < 0) { const char *e = getenv("CASTLEVANIA_MASKED_BIND"); enabled = !e || strcmp(e, "0"); }
-    return enabled;
+    if (enabled < 0) {
+        const char *e = getenv("DM_NVN_STAGE_BIND");
+        if (e) enabled = strcmp(e, "0") != 0;
+#ifdef CASTLEVANIA_NATIVE_PROBE
+        else { e = getenv("CASTLEVANIA_MASKED_BIND"); enabled = !e || strcmp(e, "0"); }
 #else
-    return 0;
+        else enabled = 0;
 #endif
+    }
+    return enabled;
 }
 static const prog_t *graphics_program_after_bind(const prog_t *current, const p_bind_program *bind) {
-    return nvn_bind_keeps_graphics(bind->prog, bind->stages, masked_bind_on()) ? current : bind->prog;
+    return nvn_bind_keeps_graphics(bind->stages, stage_bind_on()) ? current : bind->prog;
+}
+static const prog_t *compute_program_after_bind(const prog_t *current, const p_bind_program *bind) {
+    return nvn_bind_keeps_compute(bind->stages, stage_bind_on()) ? current : bind->prog;
 }
 static int state_op(uint32_t op, const void *a) {
     switch (op) {
         case OP_SCISSOR: R.sc = *(const p_scissor *)a; R.has_sc = 1; break;
         case OP_BIND_PROGRAM: {
             const p_bind_program *b = a;
+            if (stage_bind_on() && (b->stages & 0x3) && (b->stages & 0x3) != 0x3) {
+                static int warned;
+                if (!warned) { warned = 1; MLOG("NVN stage binding: partial vertex/fragment mask %#x needs per-stage program composition", b->stages); }
+            }
             const prog_t *np = graphics_program_after_bind(S.prog, b);
-            if (np != S.prog) { S.prog = np; g_pso_dirty = 1; args_program_changed(); }
+            const prog_t *nc = compute_program_after_bind(S.compute_prog, b);
+            int graphics_changed = np != S.prog, compute_changed = nc != S.compute_prog;
+            if (graphics_changed) { S.prog = np; g_pso_dirty = 1; args_program_changed(); }
+            S.compute_prog = nc;
+            if (compute_changed) g_args_dirty[5] = 1;
             break;
         }
         case OP_BIND_STATE: {
@@ -7400,7 +7415,7 @@ static int sdx_bucket(uint64_t ser, int add) {   // 返回桶号；不在集合�
 }
 static const uint8_t **g_sdx_op; static uint32_t g_sdx_nop, g_sdx_opcap;
 static uint32_t g_exec_seq;   // 回放中当前操作的序号 | Sequence number of the current operation during replay
-static uint64_t g_pp_slot[6][160]; static const prog_t *g_pp_prog; static const p_set_rt *g_pp_rt; static uint32_t g_pp_rtseq;
+static uint64_t g_pp_slot[6][160]; static const prog_t *g_pp_prog, *g_pp_compute_prog; static const p_set_rt *g_pp_rt; static uint32_t g_pp_rtseq;
 static uint32_t *g_rtx_seq, *g_drx_seq; static uint32_t g_rtx_n, g_rtx_cap, g_drx_n, g_drx_cap;   // 本次提交的 SET_RT / 绘制序号表（可读 tile 合并的预筛用） | This submit's SET_RT / draw sequence number tables (used by the pre-screen of the readable tile merge)
 static void seq_push(uint32_t **v, uint32_t *n, uint32_t *cap, uint32_t x) { if (*n == *cap) { *cap = *cap ? *cap * 2 : 1024; *v = realloc(*v, *cap * sizeof **v); } (*v)[(*n)++] = x; }
 static void sdx_ev_add(sdx_ev e) { if (sdx_bucket(e.ser, 0) < 0) return; if (g_sdx_n == g_sdx_cap) { g_sdx_cap = g_sdx_cap ? g_sdx_cap * 2 : 4096; g_sdx = realloc(g_sdx, g_sdx_cap * sizeof *g_sdx); g_sdx_tmp = realloc(g_sdx_tmp, g_sdx_cap * sizeof *g_sdx); } g_sdx[g_sdx_n++] = e; }
@@ -7437,10 +7452,14 @@ static void sdx_walk(const uint8_t *p, int depth) {
             case OP_BIND_TEX: case OP_BIND_IMG: { const p_bind_handles *b = a; int base = h.op == OP_BIND_IMG ? 128 : 0, lim = h.op == OP_BIND_IMG ? 32 : 128;
                 if (b->stage < 6 && b->first >= 0 && b->first + b->n <= lim) for (int k = 0; k < b->n; k++) g_pp_slot[b->stage][base + b->first + k] = h_ser(b->h[k]);
                 break; }
-            case OP_BIND_PROGRAM: g_pp_prog = graphics_program_after_bind(g_pp_prog, a); break;
+            case OP_BIND_PROGRAM:
+                g_pp_prog = graphics_program_after_bind(g_pp_prog, a);
+                g_pp_compute_prog = compute_program_after_bind(g_pp_compute_prog, a);
+                break;
             case OP_DRAW: case OP_DRAW_IDX: case OP_DISPATCH: {
                 if (h.op != OP_DISPATCH) seq_push(&g_drx_seq, &g_drx_n, &g_drx_cap, seq);
-                __unsafe_unretained NvProg *pr = g_pp_prog ? prog_get(g_pp_prog) : nil;
+                const prog_t *bound = h.op == OP_DISPATCH ? g_pp_compute_prog : g_pp_prog;
+                __unsafe_unretained NvProg *pr = bound ? prog_get(bound) : nil;
                 if (!pr) { for (int st = 0; st < 6; st++) for (int k = 0; k < 160; k++) if (g_pp_slot[st][k]) sdx_ev_add((sdx_ev){seq, 0, g_pp_slot[st][k], p, 0, 0, SDX_READ, 0, 0, 1}); }
                 else for (int st = 0; st < 6; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh || (h.op == OP_DISPATCH) != (st == 5)) continue;
                     for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; int k = b->kind == NVN_RB_IMG ? 128 + b->reg : (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) ? b->reg : -1;
@@ -7467,7 +7486,7 @@ void mtl_sub_index(const uint64_t *h, int n) {   // 提交开始（hle_nvn.c Que
     memset(g_sdx_hk, 0, sizeof g_sdx_hk); g_sdx_nb = 0;
     for (int i = 0; i < g_xv_n; i++) sdx_bucket(g_xv[i].ser, 1);   // 账本里的贴图进候选集：否则它在本次提交里只被采样、不作附件时读事件不入索引，兜底看不见 | Textures in the ledger enter the candidate set: otherwise, when one is only sampled and not used as an attachment in this submit, its read events are not indexed and the fallback cannot see them
     if (R.has_rt) { for (int k = 0; k < R.rt.n && k < 8; k++) if (R.rt.color[k]) sdx_bucket(R.rt.color[k]->serial, 1); if (R.rt.depth) sdx_bucket(R.rt.depth->serial, 1); }   // 提交开始时的目标（首个绘制可能不经 SetRenderTargets 重开通道） | The targets at the start of the submit (the first draw may reopen the render pass without going through SetRenderTargets)
-    g_pp_prog = S.prog; g_pp_rt = NULL; g_pp_rtseq = SDX_NONE;
+    g_pp_prog = S.prog; g_pp_compute_prog = S.compute_prog; g_pp_rt = NULL; g_pp_rtseq = SDX_NONE;
     for (int st = 0; st < 6; st++) { for (int k = 0; k < 128; k++) g_pp_slot[st][k] = S.tex[st][k] ? h_ser(S.tex[st][k]) : 0;
                                      for (int k = 0; k < 32; k++) g_pp_slot[st][128 + k] = S.img[st][k] ? h_ser(S.img[st][k]) : 0; }
     g_sdx_ren = 1;
@@ -9592,8 +9611,8 @@ static id<MTL4ComputeCommandEncoder> disp_enc(void) {
 }
 static void dispatch(const p_dispatch *dp) {
     zskip_clear();
-    if (!S.prog) { RED_ONCE(27, "派发前没有绑定程序"); return; }
-    __unsafe_unretained NvProg *cpr = prog_get(S.prog);
+    if (!S.compute_prog) { RED_ONCE(27, "派发前没有绑定程序"); return; }
+    __unsafe_unretained NvProg *cpr = prog_get(S.compute_prog);
     if (cpr->missing) { static uint64_t n; if (!n++) MLOG("[shader-miss] 计算着色器还没翻译：跳过这个派发（以后同类不再提示）"); return; }
     NvShader *cs = cpr->sh[5];
     if (!cs) { RED_ONCE(28, "派发的程序没有计算着色器（或未映射）"); return; }
@@ -12834,9 +12853,9 @@ int mtl_probe_drv_c0(void) {
     memset(mem, 0, PG); mtl_pool_add(mem, PG);
     op_hdr end = {OP_END, 8}; mtl_sub_begin(); mtl_exec((const uint8_t *)&end);
     memset(&S.ssbo, 0, sizeof S.ssbo); S.ssbo[5][0] = (p_bind_buf){5, 0, (uint64_t)(uintptr_t)mem, PG};
-    const prog_t *saved = S.prog; S.prog = &p;
+    const prog_t *saved = S.compute_prog; S.compute_prog = &p;
     p_dispatch dp = {5, 3, 1, 0}; dispatch(&dp);
-    S.prog = saved; mtl_sub_commit(); mtl_finish(); memset(&S.ssbo, 0, sizeof S.ssbo);
+    S.compute_prog = saved; mtl_sub_commit(); mtl_finish(); memset(&S.ssbo, 0, sizeof S.ssbo);
     for (uint32_t t = 0; t < 15; t++) {
         const uint32_t *c = mem + 4 * t;
         if (c[0] != 5 || c[1] != 3 || c[2] != 1 || c[3] != 0xc0ffee00u + t)
@@ -12846,14 +12865,14 @@ int mtl_probe_drv_c0(void) {
     /* Same submission: the second dispatch changes BOTH output binding and group counts.
        A stale bank reuses {5,3,1} and writes the wrong rows into the second output. */
     memset(mem, 0, PG); mtl_sub_begin(); mtl_exec((const uint8_t *)&end);
-    S.prog = &p; S.ssbo[5][0] = (p_bind_buf){5, 0, (uint64_t)(uintptr_t)mem, PG};
+    S.compute_prog = &p; S.ssbo[5][0] = (p_bind_buf){5, 0, (uint64_t)(uintptr_t)mem, PG};
     dispatch(&dp);
     const char *negative = getenv("TOTK_PROBE_NEGATIVE");
     g_driver_probe_stale = negative && !strcmp(negative, "2");
     S.ssbo[5][0] = (p_bind_buf){5, 0, (uint64_t)(uintptr_t)(mem + 1024), PG - 4096};
     p_dispatch dp2 = {3, 2, 1, 0}; dispatch(&dp2);
     g_driver_probe_stale = 0;
-    S.prog = saved; mtl_sub_commit(); mtl_finish(); memset(&S.ssbo, 0, sizeof S.ssbo);
+    S.compute_prog = saved; mtl_sub_commit(); mtl_finish(); memset(&S.ssbo, 0, sizeof S.ssbo);
     for (uint32_t t = 0; t < 6; t++) {
         const uint32_t *c = mem + 1024 + 4 * t;
         if (c[0] != 3 || c[1] != 2 || c[2] != 1 || c[3] != 0xc0ffee00u + t)
@@ -12924,11 +12943,11 @@ int mtl_probe_dispatch_chain(void) {
     op_hdr end = {OP_END, 8}; mtl_sub_begin(); mtl_exec((const uint8_t *)&end);
     memset(&S.ssbo, 0, sizeof S.ssbo);
     S.ssbo[5][0] = (p_bind_buf){5, 0, (uint64_t)(uintptr_t)s0, SZ}; S.ssbo[5][1] = (p_bind_buf){5, 1, (uint64_t)(uintptr_t)s1, SZ};
-    const prog_t *saved = S.prog; uint64_t shared0 = g_disp_shared;
+    const prog_t *saved = S.compute_prog; uint64_t shared0 = g_disp_shared;
     rp_end(); blit_close();
-    for (int r = 0; r < R; r++) for (int k = 0; k < 2; k++) { S.prog = &pg[k]; p_dispatch dp = {N / 64, 1, 1, 0}; dispatch(&dp); }
+    for (int r = 0; r < R; r++) for (int k = 0; k < 2; k++) { S.compute_prog = &pg[k]; p_dispatch dp = {N / 64, 1, 1, 0}; dispatch(&dp); }
     uint64_t shared = g_disp_shared - shared0;
-    S.prog = saved; mtl_sub_commit(); mtl_finish(); memset(&S.ssbo, 0, sizeof S.ssbo);
+    S.compute_prog = saved; mtl_sub_commit(); mtl_finish(); memset(&S.ssbo, 0, sizeof S.ssbo);
     if (neg != 1 && shared != 2 * R - 1) MDIE("dispatch-chain probe: %llu of %d dispatches ran in an open encoder, expected %d", (unsigned long long)shared, 2 * R, 2 * R - 1);
     checked++;
     uint64_t bad = 0, first = N;

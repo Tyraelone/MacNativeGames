@@ -1,11 +1,15 @@
 #ifndef MNG_NVN_PROGRAM_BIND_H
 #define MNG_NVN_PROGRAM_BIND_H
 
-/* A null bind that selects no vertex or fragment stage cannot clear the
-   current graphics program. This is the verified Castlevania mask pattern;
-   full independent stage binding requires a separate state representation. */
-static inline int nvn_bind_keeps_graphics(const void *program, int stages, int enabled) {
-    return enabled && !program && !(stages & 0x3);
+/* The current host resolves vertex + fragment as one graphics program and
+   compute as another. Unselected sides keep their previous program. Partial
+   graphics binds still need a real per-stage program composition. */
+static inline int nvn_bind_keeps_graphics(int stages, int enabled) {
+    return enabled && !(stages & 0x3);
+}
+
+static inline int nvn_bind_keeps_compute(int stages, int enabled) {
+    return enabled && !(stages & 0x20);
 }
 
 #endif
