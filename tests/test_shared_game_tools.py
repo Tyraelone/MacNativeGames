@@ -1,5 +1,6 @@
 """Shared input tools and legacy TOTK entry points have one implementation."""
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -76,6 +77,39 @@ class SharedGameToolsTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((output / "romfs.bin").read_bytes(), romfs())
             self.assertTrue((output / "index.json").is_file())
+
+            manifest = root / "extraction-manifest.json"
+            old = json.loads(manifest.read_text())
+            old.pop("title_id")
+            manifest.write_text(json.dumps(old))
+            rejected = root / "missing-title-romfs"
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "game_tools/extract_romfs.py"),
+                 "--keys", str(keys), "--manifest", str(manifest), "--output", str(rejected)],
+                capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Missing title ID in manifest", result.stderr)
+            self.assertFalse(rejected.exists())
+
+            legacy = root / "legacy-romfs"
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "games/totk/scripts/extract_romfs.py"),
+                 "--keys", str(keys), "--manifest", str(manifest), "--output", str(legacy)],
+                capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((legacy / "romfs.bin").read_bytes(), romfs())
+
+    def test_shared_romfs_command_requires_paths(self):
+        command = [sys.executable, str(ROOT / "game_tools/extract_romfs.py"), "--keys", "keys.txt"]
+        missing_output = subprocess.run(command, capture_output=True, text=True, check=False)
+        self.assertEqual(missing_output.returncode, 2, missing_output.stderr)
+        self.assertIn("--output", missing_output.stderr)
+        with tempfile.TemporaryDirectory(prefix="mng-shared-romfs-args-") as folder:
+            missing_manifest = subprocess.run(
+                [*command, "--output", str(Path(folder) / "romfs")],
+                capture_output=True, text=True, check=False)
+        self.assertNotEqual(missing_manifest.returncode, 0)
+        self.assertIn("Provide --manifest", missing_manifest.stderr)
 
     def test_shared_update_command_requires_title_id(self):
         command = [sys.executable, str(ROOT / "game_tools/extract_update_romfs.py"),

@@ -12,6 +12,15 @@ if root is None:
     raise ModuleNotFoundError('game_tools is missing from the build work folder')
 sys.path.insert(0, str(root))
 from game_tools.extract_romfs import *  # noqa: F401,F403
+from game_tools.extract_romfs import main as _shared_main
+
+
+def main():
+    return _shared_main(
+        default_manifest=Path('extracted/v0/extraction-manifest.json'),
+        default_output=Path('extracted/v0/romfs'),
+        default_title_id='0100F2C0115B6000',
+    )
 
 
 if __name__ == "__main__":

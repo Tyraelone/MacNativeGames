@@ -279,6 +279,14 @@ class Containers(unittest.TestCase):
         self.assertEqual(report['ivfc_blocks'], [1] * 6)
         self.assertEqual(json.loads((out / 'source-manifest.json').read_text())['program']['title_id'], f'{addon:016X}')
 
+        shared_out = self.path / 'shared-addon-romfs'
+        shared = subprocess.run([sys.executable, ROOT / 'game_tools/extract_romfs.py',
+                                 '--keys', self.keys, '--source', game,
+                                 '--title-id', f'{addon:016X}', '--output', shared_out],
+                                capture_output=True, text=True)
+        self.assertEqual(shared.returncode, 0, shared.stderr)
+        self.assertEqual((shared_out / 'romfs.bin').read_bytes(), romfs())
+
         rejected = subprocess.run(command[:-3] + [f'{TITLE:016X}', '--output', self.path / 'wrong-romfs'],
                                   capture_output=True, text=True)
         self.assertNotEqual(rejected.returncode, 0)

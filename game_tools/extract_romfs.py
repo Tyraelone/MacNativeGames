@@ -13,15 +13,16 @@ else:
     from extract_exefs import (decrypt, read_at, require, load_keys, container_entries,
                                common_tickets, nca_inventory, program_nca, nca_ctr_key, record_offset)
 
-def main():
+def main(default_manifest=None, default_output=None, default_title_id=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--keys',type=Path,required=True)
-    parser.add_argument('--manifest',type=Path,default=Path('extracted/v0/extraction-manifest.json'))
+    parser.add_argument('--manifest',type=Path,default=default_manifest)
     parser.add_argument('--source',type=Path,help='DLC NSP with a PublicData NCA; requires --title-id')
     parser.add_argument('--title-id',type=lambda value:value.upper(),help='expected DLC title ID with --source')
-    parser.add_argument('--output',type=Path,default=Path('extracted/v0/romfs'))
+    parser.add_argument('--output',type=Path,required=default_output is None,default=default_output)
     args=parser.parse_args(); require(not args.output.exists(),'Output already exists')
     require(bool(args.source)==bool(args.title_id),'--source and --title-id must be used together')
+    require(args.source or args.manifest is not None,'Provide --manifest for base RomFS')
     if args.title_id:
         require(len(args.title_id)==16 and all(c in '0123456789ABCDEF' for c in args.title_id),
                 'Expected a 16-digit uppercase title ID')
@@ -42,8 +43,10 @@ def main():
                           container=kind,title_id=args.title_id,program=actual)
         else:
             require(kind==manifest['container'],'Source container type changed')
+            title_id=manifest.get('title_id',default_title_id)
+            require(title_id is not None,'Missing title ID in manifest')
             actual,hdr=program_nca(records,
-                                   title_id=manifest.get('title_id', '0100F2C0115B6000'),
+                                   title_id=title_id,
                                    allow_combined=kind=='xci')
             record=manifest['program']
             require(actual['name']==record['name'] and actual['size']==record['size'] and

@@ -19,6 +19,8 @@
 
 共用 ExeFS 命令现要求显式 `--title-id`，王国之泪旧脚本路径保留原默认值。用该共用命令对马里奥本体和升级档再次提取，`main` SHA-256 分别保持 `f197aa237cb7de76888bc29077796fb85eb2bad5b762e15d26d48789bdfe0dbb` 和 `ff9a3728246d45a750a686d1625bdeafb0a361ea75e19964675a14f629f98c32`；临时 ExeFS 已清理。
 
+共用 RomFS 命令不再默认读取王国之泪清单或向相对的 `extracted/v0/romfs` 写入；本体需要显式清单和输出目录，DLC 需要显式源、title ID 与输出目录。旧王国之泪入口保留既有默认值。用新共用命令对马里奥本体重跑，六层 IVFC、3,726,437,684 字节、19,012 个文件及 RomFS SHA-256 `93f395acc2cb55ab2b7a9ad9b74a39a797f3e82483d7fedc85a3bc229baf8aab` 再次一致，临时数据已清理。
+
 RomFS 共用工具又对马里奥本体 NSP 单独完成六层 IVFC 校验和文件索引：3,726,437,684 字节、19,012 个文件，SHA-256 `93f395acc2cb55ab2b7a9ad9b74a39a797f3e82483d7fedc85a3bc229baf8aab`。固定 hactool 对本体和升级档的 BKTR 合并也通过六层 IVFC 校验：3,732,302,808 字节、19,034 个文件，SHA-256 `e68e6b26c3d4edbdc879a54edcaf70c0be7877d881eb41a42cfcdb1d3b8d328b`。大型临时输出已清理，摘要位于 `/tmp/mng-mario-romfs-proof-20261023.json` 与 `/tmp/mng-mario-bktr-fixed-proof-20261023.json`。这些结果不改变 `inspect` 的 `romfs: not_assessed` 字段，也不证明原生运行。
 
 BKTR 合并实现现位于 `game_tools/extract_update_romfs.py`；共用命令必须传基础游戏 `--title-id`，王国之泪原路径保留既有默认 ID。新共用命令也对马里奥原始输入完成真实复验，结果与迁移前一致；小型摘要在 `/tmp/mng-mario-shared-bktr-proof-20261023.json`。迁移只改变离线工具调用路径，不改变合并、IVFC 校验或游戏运行热路径。
