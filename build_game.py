@@ -53,7 +53,8 @@ def main(argv=None) -> int:
     if not args or args[0] not in TARGETS:
         print(f"Unknown target: {args[0] if args else '(none)'}\n{usage()}", file=sys.stderr, end="")
         return 2
-    return subprocess.run(command_for(args[0], args[1:]), check=False).returncode
+    result = subprocess.run(command_for(args[0], args[1:]), check=False)
+    return result.returncode if result.returncode >= 0 else 128 - result.returncode
 
 
 if __name__ == "__main__":

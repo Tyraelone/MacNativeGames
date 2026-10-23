@@ -85,6 +85,18 @@ class BuildGameDispatchTests(unittest.TestCase):
             }):
                 self.assertEqual(build_game.main(["castlevania", "--help"]), 17)
 
+    def test_signaled_builder_returns_conventional_shell_status(self):
+        with tempfile.TemporaryDirectory(prefix="mng-build-signal-") as folder:
+            script = Path(folder) / "terminate_child.py"
+            script.write_text(
+                "import os, signal\n"
+                "os.kill(os.getpid(), signal.SIGTERM)\n"
+            )
+            with patch.dict(build_game.TARGETS, {
+                "castlevania": ("test", "test", script),
+            }):
+                self.assertEqual(build_game.main(["castlevania"]), 143)
+
 
 if __name__ == "__main__":
     unittest.main()

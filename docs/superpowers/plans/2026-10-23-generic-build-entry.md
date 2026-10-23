@@ -23,7 +23,7 @@ Spec: `docs/superpowers/specs/2026-10-23-generic-build-entry-design.md`
 
 ## Task 2：精确分派及退出码
 
-1. 扩展 `tests/test_build_game.py`：针对三个目标，对纯函数 `command_for(target, args)` 检查脚本绝对路径、当前 Python 解释器、参数顺序及特殊字符原样保留；对 `main(..., run=...)` 检查实际分派列表、退出码原样返回；目标后的 `--help` 传给旧脚本。测试先失败，原因应是函数尚不存在。
+1. 扩展 `tests/test_build_game.py`：针对三个目标，对纯函数 `command_for(target, args)` 检查脚本绝对路径、当前 Python 解释器、参数顺序及特殊字符原样保留；用项目外临时脚本检查正常退出码原样返回、信号终止转为 `128 + 信号编号`；目标后的 `--help` 传给旧脚本。测试先失败，原因应是函数尚不存在或状态转换尚未实现。
 2. 在 `build_game.py` 实现纯函数与分派。只允许目录里的固定脚本，不运行用户指定路径。不要解析或改写旧脚本参数。
 3. 验证目标测试及现有全集。全量命令：`SDKROOT=<Xcode 26.5 SDK> PYTHONDONTWRITEBYTECODE=1 <venv-python> -m unittest discover -s tests -v`。
 
