@@ -79,6 +79,8 @@ The runtime preflight also classifies only symbols referenced by relocations. Fo
 
 Mario Wonder update 1.2.1 now has a separate [native preview packaging route](games/mario_wonder/README.md) based on the verified external build work. The current App was exercised through the opening playable scene; this route still requires the prepared external host and does not yet turn arbitrary game files into an App through `build_game.py`.
 
+The shared NVN-to-Metal host now prepares cached shader-variant metadata before play and batches first-use GPU memory-pool residency at command-buffer submission. In one isolated Mario scene-entry replay on an M1 Pro, the control frame took 81.8 ms and the optimized frame took 30.8 ms; the installed full App measured 34.3 ms, with no new pipeline on those frames. Metadata preparation added about 4–6 seconds to startup in these runs. This reduces a measured first-visit stall but does not guarantee smooth entry into every new scene or cover shader variants absent from the package. The [Mario performance record](games/mario_wonder/README.md#remaining-scene-entry-stutter) gives the test setup, external evidence locations, and remaining limits.
+
 For an existing external `DM_NVN_TSV` log, `game_tools/frame_metrics.py` reports frame-time distribution and sample coverage without starting a game; see [performance test methods](docs/performance-followups.md). It does not establish a gameplay performance baseline on its own.
 
 **1. Tools** (once): the Xcode command line tools and [Homebrew](https://brew.sh). An internet connection is needed to install the build dependencies and fetch the pinned SPIRV-Cross source:
@@ -176,7 +178,7 @@ Language: the game and the launcher's own text (startup screen, shader warm-up p
 - Supports base 1.0.0, or base plus the separate 1.1.2 or 1.4.3 update NSP/NSZ. Other versions, DLC, combined packages, compressed base games (NSZ/XCZ) and personalized tickets remain unsupported. Mac only.
 - No online features, no amiibo.
 - New shaders can cause compilation stutters. Cache reuse reduces these, but does not guarantee stutter-free gameplay.
-- The 47 automated tests cover generated container/update fixtures, relocation formats, work-folder isolation, packaging, desktop migration, shader extraction, first-import cache preservation, 27 native RomFS path cases, and Kirby language selection, shortcut state, guarded frame pacing, derived-shader orientation and GPU keepalive policy. GitHub Actions is configured to run the source tests and native path-parser sanitizers without game data or keys. A complete Mac build also passed with a local XCI-derived NSP fixture and generated common ticket. An independent retail base NSP and gameplay from that input have not yet been tested.
+- The local source suite currently runs 185 tests, including container/update fixtures, shared module and relocation checks, packaging, shader seeds, cold-scene metrics, and game-specific probes; one optional external replay test is skipped without a recorded game run. GitHub Actions is configured to run source tests and native path-parser sanitizers without game data or keys. A complete Mac build also passed with a local XCI-derived NSP fixture and generated common ticket. An independent retail base NSP and gameplay from that input have not yet been tested.
 
 ## How it works
 
@@ -280,6 +282,8 @@ python3.14 build_game.py totk ~/Games/totk.xci -k ~/keys/prod.keys
 
 马里奥升级档 1.2.1 现有独立的[原生预览版打包入口](games/mario_wonder/README.md)，使用已验证的项目外构建工作区。当前 App 已实测进入开场可操作场景；该入口仍要求先准备项目外宿主，并不意味着 `build_game.py` 已能从任意游戏文件直接生成 App。
 
+共用 NVN→Metal 宿主现在会在开玩前准备缓存中的着色器变体元数据，并在提交 GPU 命令缓冲时合并首次使用内存池的驻留操作。M1 Pro 上一次隔离的马里奥新场景回放中，对照关键帧为 81.8 毫秒，优化后为 30.8 毫秒；安装的完整 App 测得 34.3 毫秒，这些帧均未新建管线。本次元数据预热使启动多花约 4–6 秒。它缩短了已测的首次进入卡顿，但不能保证所有新场景都流畅，也不能预知包内没有的着色器变体。测试方法、项目外证据和限制见[马里奥性能记录](games/mario_wonder/README.md#remaining-scene-entry-stutter)。
+
 项目外现有 `DM_NVN_TSV` 日志可用 `game_tools/frame_metrics.py` 离线汇总帧时间分布和样本覆盖率，方法见[性能复测](docs/performance-followups.md)；单独运行该汇总不构成真实游玩性能基线。
 
 **1. 工具**（只需一次）：Xcode 命令行工具和 [Homebrew](https://brew.sh)。安装构建依赖和获取固定版本的 SPIRV-Cross 源码需要联网：
@@ -377,7 +381,7 @@ macOS 能识别的手柄（如 DualSense、Xbox 手柄）会映射为 Switch Pro
 - 支持本体 1.0.0，或本体加单独的 1.1.2 / 1.4.3 更新（NSP/NSZ）。其他版本、DLC、合并包、压缩本体（NSZ/XCZ）和个性化票据仍不支持。平台仅限 Mac。
 - 没有联网功能，没有 amiibo。
 - 首次遇到新着色器可能出现编译卡顿，缓存能减少重复编译，但不保证完全没有卡顿。
-- 47 项自动测试覆盖生成的容器 / 更新样本、重定位格式、工作目录隔离、打包、桌面入口迁移、着色器提取、首次导入的缓存保留、27 个原生 RomFS 路径用例，以及卡比的语言选择、快捷键状态、带原值保护的帧节拍、派生着色器方向和 GPU 保活策略。GitHub Actions 已配置为运行源码测试和路径解析器内存检查，不需要游戏数据或密钥；另使用本地 XCI 构造、附带生成通用票据的 NSP 测试副本完成完整 Mac 打包。尚未验证独立的零售本体 NSP，也未测试从该类输入构建后的实际游玩。
+- 本机源码测试目前运行 185 项，覆盖容器 / 更新样本、共用模块与重定位检查、打包、着色器种子、冷场景指标和各游戏探针；未提供外部游戏回放记录时跳过 1 项可选测试。GitHub Actions 已配置为运行源码测试和路径解析器内存检查，不需要游戏数据或密钥；另使用本地 XCI 构造、附带生成通用票据的 NSP 测试副本完成完整 Mac 打包。尚未验证独立的零售本体 NSP，也未测试从该类输入构建后的实际游玩。
 
 ## 工作原理
 

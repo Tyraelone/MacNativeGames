@@ -116,7 +116,11 @@ and installed at `/Applications/超级马里奥兄弟 惊奇.app`.
 The Applications copy passed deep code-signature verification. Its verified
 merged RomFS, rewritten executables, and shader seed match the previous
 standalone build byte for byte; only the native host binary changed.
-The previous installed App is preserved in
+The 2026-10-23 release check reinstalled this signed full bundle into the same
+Applications path after confirming its native binary matched the current
+external host build. The displaced Applications copy is preserved in
+`development/previous-mario-cold-scene-before-release-20261023.app`.
+The earlier preview App is preserved in
 `development/previous-mario-preview-before-cold-scene-20261023.app`.
 The preceding recorded-seed build is preserved in
 `development/previous-mario-preview-recorded-20261023.app` there.
