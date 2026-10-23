@@ -105,6 +105,8 @@ class Updates(unittest.TestCase):
 
     def test_merge_ticket_privacy_and_failure_cleanup(self):
         # A mock hactool verifies plumbing, not BKTR cryptography (covered by the real local build).
+        with self.keys.open('a') as key_file:
+            key_file.write('\nmariko_master_kek_source_05 = ' + 'ab' * 17 + '\n')
         space = patch('extract_update_romfs.shutil.disk_usage')
         space.start().return_value.free = 100 * 2**30
         self.addCleanup(space.stop)
@@ -114,6 +116,12 @@ class Updates(unittest.TestCase):
             'key=pathlib.Path(os.environ["MNG_TITLE_KEYS"])\n'
             'assert stat.S_IMODE(key.stat().st_mode)==0o600\n'
             'assert key.read_text() and not any("--titlekey=" in s for s in sys.argv)\n'
+            'keyset=pathlib.Path(sys.argv[sys.argv.index("-k")+1])\n'
+            'assert keyset.parent==key.parent and keyset!=key\n'
+            'assert stat.S_IMODE(keyset.stat().st_mode)==0o600\n'
+            'names={line.split("=",1)[0].strip() for line in keyset.read_text().splitlines()}\n'
+            'assert {"header_key","key_area_key_application_00","titlekek_00"} <= names\n'
+            'assert "mariko_master_kek_source_05" not in names\n'
             'assert len(list(key.parent.glob("*.nca")))==1\n'
             'base=pathlib.Path(next(s.split("=",1)[1] for s in sys.argv if s.startswith("--basenca=")))\n'
             'offset=int(os.environ["MNG_BASE_RANGE_OFFSET"]); size=int(os.environ["MNG_BASE_RANGE_SIZE"])\n'

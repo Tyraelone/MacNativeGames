@@ -17,7 +17,7 @@
 
 把离线工具实现迁至 `game_tools/` 后，再次运行马里奥本体/更新包、卡比本体和恶魔城组合 XCI 主游戏；四份检查均保持原状态，CNMT 与 ExeFS 哈希链仍为 `pass`。复验 JSON 在 `/tmp/mng-shared-tools-<输入名>-20261023.json`，输入名为 `mario-base`、`mario-update`、`kirby`、`castlevania-base`。
 
-RomFS 共用工具又对马里奥本体 NSP 单独完成六层 IVFC 校验和文件索引：3,726,437,684 字节、19,012 个文件，SHA-256 `93f395acc2cb55ab2b7a9ad9b74a39a797f3e82483d7fedc85a3bc229baf8aab`。大型临时输出已清理，摘要位于 `/tmp/mng-mario-romfs-proof-20261023.json`。此结果不改变 `inspect` 的 `romfs: not_assessed` 字段，也不证明升级档 BKTR 合并或原生运行。
+RomFS 共用工具又对马里奥本体 NSP 单独完成六层 IVFC 校验和文件索引：3,726,437,684 字节、19,012 个文件，SHA-256 `93f395acc2cb55ab2b7a9ad9b74a39a797f3e82483d7fedc85a3bc229baf8aab`。固定 hactool 对本体和升级档的 BKTR 合并也通过六层 IVFC 校验：3,732,302,808 字节、19,034 个文件，SHA-256 `e68e6b26c3d4edbdc879a54edcaf70c0be7877d881eb41a42cfcdb1d3b8d328b`。大型临时输出已清理，摘要位于 `/tmp/mng-mario-romfs-proof-20261023.json` 与 `/tmp/mng-mario-bktr-fixed-proof-20261023.json`。这些结果不改变 `inspect` 的 `romfs: not_assessed` 字段，也不证明原生运行。
 
 另一个标称“恶魔城本体 1.1.0”的独立 NSP 被 NCA3 区段边界校验拒绝：Program NCA 的容器条目及 NCA 头大小均为 558,891,008 字节，而头内区段结束位置达到 3,058,843,648 字节。不能把它当作已验证的标准 NSP，也不能仅凭此断定游戏版本本身有问题；本次矩阵使用通过检查的组合 XCI 本体和独立更新 NSP。
 

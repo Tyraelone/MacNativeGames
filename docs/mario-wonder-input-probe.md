@@ -13,10 +13,12 @@
 
 这个样本暴露了原 `prepare_modules.py` 和 `map_dependencies.py` 固定要求 `subsdk0` 的假设。现改为盘点实际 NSO，并从生成的 `modules.json` 读取依赖图模块集合；王国之泪仍会包含其 `subsdk0`。马里奥本体与升级档都通过了这两步。临时 ExeFS、ELF 和盘点输出位于项目外 `/tmp/mng-mario-probe-20261023.8fLZdV/`，可从上述原始 NSP 重新生成；它们不是项目依赖。
 
-尚未验证：升级档 BKTR 合并、游戏服务调用、NVN 着色器阶段、指令改写、启动、画面和帧时间。现有正式构建器仍按王国之泪的版本哈希、模块列表和资源规则工作；它不能把本样本直接打包为受支持的 App。ExeFS 提取器验证了 FS header、ExeFS 哈希表与每个 ExeFS 数据块，没有验证 RSA 签名。
+尚未验证：游戏服务调用、NVN 着色器阶段、指令改写、启动、画面和帧时间。现有正式构建器仍按王国之泪的版本哈希、模块列表和资源规则工作；它不能把本样本直接打包为受支持的 App。ExeFS 提取器验证了 FS header、ExeFS 哈希表与每个 ExeFS 数据块，没有验证 RSA 签名。
 
 统一只读入口 `build_game.py inspect <NSP> --keys <prod.keys>` 已对本体和升级档实际运行。两者均报告 `unported_title`、模块 `rtld/main/sdk`；容器头、ExeFS 哈希链、NSO 段哈希为 `pass`，RomFS、宿主服务、NVN、媒体、改写、游玩性能为 `not_assessed`。小型 JSON 报告保存在项目外 `/tmp/mng-mario-probe-20261023.8fLZdV/{base,update}/inspect-report.json`；检查器的独立临时工作目录已自动清理。同一入口在已有王国之泪本体 NSP 上发现四个 NSO 均匹配固定 1.0.0 代码，但 `main.npdm` 不同，因此报告 `known_title_unknown_version` 与 `code_match`，没有把该包误报为完整的固定配置。
 
 后续直接解析经哈希验证的 CNMT：本体的原始版本值为 `0`，升级档为 `327680`（`0x50000`），内容类型分别为 `application`、`patch`。这些是内部整数，不能据此宣称文件名中的“1.2.1”已获独立证明。新版报告示例在项目外 `/tmp/mng-inspect-mario-cnmt-20261023.json`。
 
-将 RomFS 提取与索引移到共用工具后，对本体 NSP 另作项目外的真实验证：FS header 和六层 IVFC 均通过，RomFS 大小 3,726,437,684 字节、SHA-256 为 `93f395acc2cb55ab2b7a9ad9b74a39a797f3e82483d7fedc85a3bc229baf8aab`，索引到 19,012 个文件。本次耗时约 5.68 秒，仅是这台机器对该输入的一次离线提取测量，不是游戏帧时间。完整 RomFS 临时文件已清理；小型摘要保存在 `/tmp/mng-mario-romfs-proof-20261023.json`，系统可能清理该临时证据。`inspect` 报告仍将 RomFS 标为 `not_assessed`，因为它不执行大型提取；升级档 BKTR 合并仍未验证。
+将 RomFS 提取与索引移到共用工具后，对本体 NSP 另作项目外的真实验证：FS header 和六层 IVFC 均通过，RomFS 大小 3,726,437,684 字节、SHA-256 为 `93f395acc2cb55ab2b7a9ad9b74a39a797f3e82483d7fedc85a3bc229baf8aab`，索引到 19,012 个文件。本次耗时约 5.68 秒，仅是这台机器对该输入的一次离线提取测量，不是游戏帧时间。完整 RomFS 临时文件已清理；小型摘要保存在 `/tmp/mng-mario-romfs-proof-20261023.json`，系统可能清理该临时证据。`inspect` 报告仍将 RomFS 标为 `not_assessed`，因为它不执行大型提取。
+
+随后用项目固定提交的 hactool 和原始本体、升级档、`prod.keys` 运行 BKTR 合并。hactool 对原始密钥文件中无关但长度不合其格式的项报错；构建脚本现将它需要的有效 NCA 密钥类别写入权限为 `0600` 的项目外临时文件，并在合并后清理。使用原始 `prod.keys` 重跑，BKTR 和六层 IVFC 均通过：合并 RomFS 为 3,732,302,808 字节、19,034 个文件，SHA-256 `e68e6b26c3d4edbdc879a54edcaf70c0be7877d881eb41a42cfcdb1d3b8d328b`。该结果与先前手工筛选密钥的独立运行一致；大型临时输出已清理，摘要位于 `/tmp/mng-mario-bktr-fixed-proof-20261023.json`。本机验证使用 Xcode 26.5 SDK；系统默认的命令行工具 SDK 在链接 hactool 时失败。此验证仍不证明马里奥可原生运行。

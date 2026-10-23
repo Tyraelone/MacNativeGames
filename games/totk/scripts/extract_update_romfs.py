@@ -28,6 +28,22 @@ def copy_range(source, offset, size, target):
             size -= len(data)
 
 
+def write_hactool_keyset(keys, path):
+    """Give hactool only the valid NCA keys it needs, in a private temporary file."""
+    selected = {}
+    for name, value in keys.items():
+        length = (32 if name == 'header_key' else 16 if re.fullmatch(
+            r'(?:key_area_key_(?:application|ocean|system)|titlekek|master_key)_[0-9a-f]{2}', name)
+            else None)
+        if length is not None and len(value) == length:
+            selected[name] = value
+    require('header_key' in selected, 'Missing valid header_key for hactool')
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w') as stream:
+        for name in sorted(selected):
+            stream.write(f'{name} = {selected[name].hex()}\n')
+
+
 def merge(base, update, keys_path, hactool, output, *, base_romfs=None,
           title_id='0100F2C0115B6000'):
     require(not output.exists(), 'Output exists')
@@ -58,6 +74,8 @@ def merge(base, update, keys_path, hactool, output, *, base_romfs=None,
         require(Path(base_romfs).is_file(), 'Previous-version RomFS is missing')
     with tempfile.TemporaryDirectory(prefix='update-merge-', dir=output.parent) as tmp:
         tmp = Path(tmp)
+        hactool_keys = tmp/'hactool.keys'
+        write_hactool_keyset(keys, hactool_keys)
         keyfile = tmp/'title.keys'
         fd = os.open(keyfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, 'w') as f:
@@ -74,7 +92,7 @@ def merge(base, update, keys_path, hactool, output, *, base_romfs=None,
             environment.update(MNG_BASE_RANGE_OFFSET=str(record_offset(inputs[0][1])),
                                MNG_BASE_RANGE_SIZE=str(inputs[0][1]['size']))
         command = [str(hactool.resolve()), '-x', '-y', '--disablekeywarns', '--suppresskeys',
-                   '-k', str(keys_path.resolve()), base_arg,
+                   '-k', str(hactool_keys), base_arg,
                    f'--section{sections[0]}='+str(result/'romfs.bin'), str(tmp/'update.nca')]
         with (result/'merge.log').open('w') as log:
             code = subprocess.run(command, env=environment,
