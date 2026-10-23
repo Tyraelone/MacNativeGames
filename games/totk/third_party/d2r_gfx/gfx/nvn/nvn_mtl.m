@@ -6549,7 +6549,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
     // DM_NVN_PASSDUMP: on the first new encode per pass per stage, records the shader key (K) and the actual source of each binding (B: UBO address / length / first 4 floats, texture ID and serial, or 「哑」(dummy))
     static uint64_t bl_pass[6]; static int bl_all = -1; if (bl_all < 0) bl_all = getenv("DM_NVN_PASSDUMP_ALL") != NULL || getenv("TOTK_INPUT_FILE") != NULL;   // 每次新编都记（否则只记每通道每阶段第一次） | Record on every new encode (otherwise only the first time per pass per stage)
     int bl = passdump() && (bl_all || bl_pass[nvn_stage] != g_stat_pass);
-    if (bl) { bl_pass[nvn_stage] = g_stat_pass; PD("K %llu st%d key=%s nb=%d prog=%p", g_stat_pass, nvn_stage, sh->key[0] ? sh->key : sh->builtin ? sh->builtin : "?", sh->rf.nb, (const void *)S.prog); }
+    if (bl) { bl_pass[nvn_stage] = g_stat_pass; PD("K %llu st%d key=%s nb=%d prog=%p", g_stat_pass, nvn_stage, sh->key[0] ? sh->key : sh->builtin ? sh->builtin : "?", sh->rf.nb, (const void *)(nvn_stage == 5 ? S.compute_prog : S.prog)); }
     int slot_mode = tex_slots_on() && !verify_epoch && nvn_stage != 5 && arg_epoch_safe(sh) && !ab_noreuse &&
         !passdump() && !g_res_check_on && g_use != USE_REC && !tex_slots_diagnostics() && !nan_trace_match(sh);
     int slot_check = slot_mode && atomic_load_explicit(&g_tex_slots_check, memory_order_relaxed);
@@ -6872,7 +6872,8 @@ static int hoist_take(const uint8_t *p) { for (int i = 0; i < g_hoist_n; i++) if
 enum { DS_FREE = 0, DS_USED = 1, DS_RET = 2 };
 static int g_ds_why; static int g_ds_scanned; static int g_ds_need;   // g_ds_need：扫描中累计的需求，1 深度 2 模板   // 诊断：判「用到」时触发的操作码（绘制则记 1000 + dt*100 + dw*10 + st）、扫过的操作数 | g_ds_need: need accumulated during the scan, 1 depth 2 stencil   // Diagnostics: the opcode that triggered the 'used' verdict (for a draw, records 1000 + dt*100 + dw*10 + st), and the number of ops scanned
 static int prog_ps_writes_depth(const prog_t *pg);
-static int ds_scan(const uint8_t *p, ds_st *ds, int depth) {
+static const prog_t *graphics_program_after_bind(const prog_t *current, const p_bind_program *bind);
+static int ds_scan(const uint8_t *p, ds_st *ds, const prog_t **pg, int *ps_depth, int depth) {
     for (int guard = 0; guard < 1000000; guard++) {
         op_hdr h; memcpy(&h, p, sizeof h);
         const void *a = p + 8; g_ds_scanned++;
@@ -6881,13 +6882,13 @@ static int ds_scan(const uint8_t *p, ds_st *ds, int depth) {
             case OP_END: return DS_RET;
             case OP_JUMP: { const uint8_t *t; memcpy(&t, a, 8); p = t; continue; }
             case OP_CALL: { uint64_t t; memcpy(&t, a, 8); if (depth >= 8) return DS_USED;
-                int r = ds_scan((const uint8_t *)t, ds, depth + 1); if (r != DS_RET) return r; break; }
+                int r = ds_scan((const uint8_t *)t, ds, pg, ps_depth, depth + 1); if (r != DS_RET) return r; break; }
             case OP_SET_RT: case OP_COPY_B2B: case OP_UPDATE_UB: case OP_COPY_B2T: case OP_COPY_T2B: case OP_COPY_T2T: case OP_CLEAR_TEX: case OP_DISPATCH: return DS_FREE;
             case OP_CLEAR_COLOR: case OP_CLEAR_DS: g_ds_why = h.op; return DS_USED;
             case OP_BIND_STATE: { const p_bind_state *b = a; if (b->kind == 5) memcpy(ds, b->bytes, sizeof *ds); break; }
-            case OP_BIND_PROGRAM: if (prog_ps_writes_depth(((const p_bind_program *)a)->prog)) { g_ds_need |= 1; g_ds_why = 2000; if (g_ds_need == 3) return DS_USED; } break;   /* TOTK: depth-writing fragment function */
+            case OP_BIND_PROGRAM: { const prog_t *next = graphics_program_after_bind(*pg, a); if (next != *pg) { *pg = next; *ps_depth = prog_ps_writes_depth(next); } break; }
             case OP_DRAW: case OP_DRAW_IDX:   // 深度测试 / 写入 → 要深度；模板测试 → 要模板；两项都要即可停 | Depth test / write → depth needed; stencil test → stencil needed; can stop once both are needed
-                g_ds_need |= (ds->dt || ds->dw ? 1 : 0) | (ds->st ? 2 : 0);
+                g_ds_need |= (ds->dt || ds->dw || *ps_depth ? 1 : 0) | (ds->st ? 2 : 0);
                 if (g_ds_need == 3) { g_ds_why = 1000 + ds->dt * 100 + ds->dw * 10 + ds->st; return DS_USED; } break;
             default: break;
         }
@@ -7363,15 +7364,16 @@ static int draw_samples_rt(NvProg *pr) {   // 采样附件保持原ser级保守g
    even when depth test and write are off. */
 static int prog_ps_writes_depth(const prog_t *pg) { if (!pg) return 0; __unsafe_unretained NvProg *pr = prog_get(pg); return pr && pr->sh[1] && pr->sh[1]->writes_depth; }
 static int pass_ds_need(void) {
-    int need = (R.clear_d || S.ds.dt || S.ds.dw || prog_ps_writes_depth(S.prog) ? 1 : 0) | (R.clear_s || S.ds.st ? 2 : 0);
+    int ps_depth = prog_ps_writes_depth(S.prog);
+    int need = (R.clear_d || S.ds.dt || S.ds.dw || ps_depth ? 1 : 0) | (R.clear_s || S.ds.st ? 2 : 0);
     if (!R.rt.depth || need == 3 || !g_exec_next || g_ret_n > 16) {
         PD("S %llu 不前瞻 depth=%d clear_d=%d clear_s=%d dt=%d dw=%d st=%d next=%d ret=%d", g_stat_pass + 1, R.rt.depth != NULL, R.clear_d, R.clear_s, (int)S.ds.dt, (int)S.ds.dw, (int)S.ds.st, g_exec_next != NULL, g_ret_n);
         return 3;
     }
-    ds_st ds = S.ds; g_ds_why = -1; g_ds_scanned = 0; g_ds_need = need;
-    int r = ds_scan(g_exec_next, &ds, 0);
-    for (int k = g_ret_n - 1; r == DS_RET && k >= 0; k--) r = ds_scan(g_ret[k], &ds, 0);
-    for (int k = 0; r == DS_RET && k < g_nrest; k++) r = ds_scan((const uint8_t *)g_rest[k], &ds, 0);
+    ds_st ds = S.ds; const prog_t *pg = S.prog; g_ds_why = -1; g_ds_scanned = 0; g_ds_need = need;
+    int r = ds_scan(g_exec_next, &ds, &pg, &ps_depth, 0);
+    for (int k = g_ret_n - 1; r == DS_RET && k >= 0; k--) r = ds_scan(g_ret[k], &ds, &pg, &ps_depth, 0);
+    for (int k = 0; r == DS_RET && k < g_nrest; k++) r = ds_scan((const uint8_t *)g_rest[k], &ds, &pg, &ps_depth, 0);
     int out = r == DS_USED ? 3 : g_ds_need;
     PD("S %llu 前瞻 结果=%d 需求=%d（1 深度 2 模板）原因=%d 扫过 %d 条 返回栈 %d 余句柄 %d", g_stat_pass + 1, r, out, g_ds_why, g_ds_scanned, g_ret_n, g_nrest);
     return out;
