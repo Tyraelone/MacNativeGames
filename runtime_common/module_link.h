@@ -22,14 +22,17 @@ enum {
 };
 
 /* The caller must verify image SHA-256 against descriptor->sha256 first.
- * Slots are caller-owned and must outlive the prepared module. */
+ * Descriptor, image, and slots are retained by the module context. Keep the
+ * descriptor, source bytes before data_off, and index slots alive and unchanged
+ * through linking; slots must be separate from the image. */
 int mng_link_prepare(MngLinkModule *module, const MngModuleDescriptor *descriptor,
                      uint8_t *image, size_t image_size, uint64_t base,
                      uint32_t *slots, size_t slot_capacity);
 
 /* Validates every prepared module before writing. Link is one-shot even on
  * failure; discard all images and reload verified originals before a retry.
- * guest_workspace has at least module_count rows and is caller-owned. */
+ * guest_workspace has at least module_count rows and is caller-owned. The
+ * resolver contexts retain its pointer while their statistics are available. */
 int mng_link_all(MngLinkModule *modules, size_t module_count,
                  MngGuestModule *guest_workspace, size_t guest_capacity,
                  MngGuestHostLookup host, void *host_context,

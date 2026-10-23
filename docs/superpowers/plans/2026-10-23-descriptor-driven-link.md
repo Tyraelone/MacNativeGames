@@ -16,4 +16,6 @@
 
 - [x] Build an external verifier that emits a descriptor, compiles the probe and compares whole linked images to Python.
 - [x] Rebuild Mario base input outside the project and record a small proof.
-- [ ] Run full tests, read-only review, fix findings, and commit.
+- [x] Run full tests, read-only review, fix findings, and commit.
+
+Review found no blocking defect. Deferred minor follow-up: add an orchestration-level host-versus-guest precedence case. The public header now spells out retained descriptor/source/index lifetimes.
