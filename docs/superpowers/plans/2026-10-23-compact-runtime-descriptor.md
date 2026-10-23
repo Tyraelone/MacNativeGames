@@ -19,7 +19,7 @@
 
 ### Task 1: Format and generator
 
-**Files:** `runtime_common/module_descriptor.{h,c}`, `game_tools/emit_runtime_descriptor.py`, `tests/test_module_descriptor.py`.
+**Files:** `runtime_common/module_descriptor.{h,c}`, `game_tools/emit_runtime_descriptor.py`, `tests/test_runtime_preflight.py`.
 
 - [x] Write failing synthetic generation and C validation cases.
 - [x] Implement the bounded descriptor format and generator with external path/hash checks.
@@ -31,4 +31,4 @@
 
 - [x] Rebuild Mario base rewrite/preflight outside the repository.
 - [x] Compile the emitted descriptor with a C consumer, compare counts/layout/gates to Python and record size.
-- [ ] Clean large generated data, review, verify and commit.
+- [x] Clean large generated data, review, verify and commit.

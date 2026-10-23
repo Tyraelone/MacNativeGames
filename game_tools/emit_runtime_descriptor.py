@@ -10,7 +10,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from game_tools.runtime_preflight import parse_dynamic, parse_fixups, parse_gates, parse_relocations
+from game_tools.runtime_preflight import (parse_dynamic, parse_fixups, parse_gates,
+                                          parse_relocations, parse_symbols)
 from packaging_common import outside_repository, verified_file
 
 NAME = re.compile(r"(?:main|sdk|subsdk[0-9]+)\Z")
@@ -35,7 +36,7 @@ def cnum(value):
     return f"UINT64_C({value})"
 
 
-def module_initializer(name, table, image, folder):
+def module_initializer(name, table, image, folder, source):
     layout = table["layout"]
     require(isinstance(layout, dict) and all(key in layout for key in LAYOUT_KEYS),
             f"Invalid layout: {name}")
@@ -51,7 +52,17 @@ def module_initializer(name, table, image, folder):
     require(isinstance(symbols, list) and 0 < len(symbols) <= 1_000_000 and
             isinstance(relocations, list) and isinstance(gates, list),
             f"Invalid runtime rows: {name}")
-    require(parse_relocations(image, layout, {int(key): value for key, value in tags.items()},
+    raw_nso = source.read_bytes()[:0xa0]
+    require(raw_nso[0x40:0x60].hex() == table["build_id"],
+            f"NSO build ID mismatch: {name}")
+    numeric_tags = {int(key): value for key, value in tags.items()}
+    require(parse_symbols(image, raw_nso, layout, numeric_tags) == symbols,
+            f"Symbol rows mismatch: {name}")
+    for address_tag, size_tag in ((36, 35), (7, 8), (23, 2)):
+        address, size = tags.get(str(address_tag), 0), tags.get(str(size_tag), 0)
+        require(not size or address + size <= layout["DATA_OFF"],
+                f"Relocation source table overlaps writable data: {name}")
+    require(parse_relocations(image, layout, numeric_tags,
                               len(symbols)) == relocations,
             f"Relocation rows mismatch: {name}")
     require(parse_gates(folder / f"{name}.gates.tsv", len(image), layout) == gates,
@@ -92,14 +103,16 @@ def module_initializer(name, table, image, folder):
     return gate_lines, "    { " + ", ".join(fields) + " },"
 
 
-def emit(runtime: Path, rewrites: Path, output: Path) -> dict:
+def emit(exefs: Path, runtime: Path, rewrites: Path, output: Path) -> dict:
+    exefs = outside_repository(Path(exefs), ROOT)
     runtime = outside_repository(Path(runtime), ROOT)
     rewrites = outside_repository(Path(rewrites), ROOT)
     output_path = Path(output).expanduser()
     require(not output_path.is_symlink(), "Output is a symlink")
     output = outside_repository(output_path, ROOT)
     require(not output.exists(), "Output already exists")
-    require(not output.is_relative_to(runtime) and not output.is_relative_to(rewrites),
+    require(not output.is_relative_to(exefs) and not output.is_relative_to(runtime) and
+            not output.is_relative_to(rewrites),
             "Output cannot be inside an input directory")
     source = runtime / "runtime-modules.json"
     verified_file(source)
@@ -117,11 +130,15 @@ def emit(runtime: Path, rewrites: Path, output: Path) -> dict:
         digest = table["patched_sha256"]
         require(isinstance(digest, str) and SHA256.fullmatch(digest),
                 f"Invalid patched SHA-256: {name}")
+        source_digest = table["nso_sha256"]
+        require(isinstance(source_digest, str) and SHA256.fullmatch(source_digest),
+                f"Invalid NSO SHA-256: {name}")
         folder = rewrites / name
         path = folder / f"{name}.patched.bin"
         verified_file(path, digest)
+        verified_file(exefs / name, source_digest)
         image = path.read_bytes()
-        gates, row = module_initializer(name, table, image, folder)
+        gates, row = module_initializer(name, table, image, folder, exefs / name)
         expected = summary["modules"][name]
         require(expected["symbols"] == len(table["symbols"]) and
                 expected["relocations"] == len(table["relocations"]) and
@@ -152,11 +169,11 @@ def emit(runtime: Path, rewrites: Path, output: Path) -> dict:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    for flag in ("runtime", "rewrites", "output"):
+    for flag in ("exefs", "runtime", "rewrites", "output"):
         parser.add_argument(f"--{flag}", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        report = emit(args.runtime, args.rewrites, args.output)
+        report = emit(args.exefs, args.runtime, args.rewrites, args.output)
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"Runtime descriptor emission failed: {error}", file=sys.stderr)
         return 2

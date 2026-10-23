@@ -43,7 +43,7 @@ class RuntimePreflightTests(unittest.TestCase):
         self.write_reports()
         runtime_preflight.prepare(self.exefs, self.manifest, self.rewrites, self.output)
         header = self.work / "module-table.h"
-        report = emit_runtime_descriptor.emit(self.output, self.rewrites, header)
+        report = emit_runtime_descriptor.emit(self.exefs, self.output, self.rewrites, header)
         self.assertEqual(report["module_order"], ["main", "sdk"])
         self.assertLess(header.stat().st_size, 8000)
         compiler = shutil.which("cc") or shutil.which("clang")
@@ -73,11 +73,52 @@ class RuntimePreflightTests(unittest.TestCase):
         image = self.rewrites / "main/main.patched.bin"
         image.write_bytes(image.read_bytes() + b"x")
         with self.assertRaisesRegex(ValueError, "SHA-256"):
-            emit_runtime_descriptor.emit(self.output, self.rewrites,
+            emit_runtime_descriptor.emit(self.exefs, self.output, self.rewrites,
                                          self.work / "module-table.h")
         with self.assertRaisesRegex(ValueError, "outside"):
-            emit_runtime_descriptor.emit(self.output, self.rewrites,
+            emit_runtime_descriptor.emit(self.exefs, self.output, self.rewrites,
                                          ROOT / "module-table.h")
+
+    def test_compact_descriptor_rejects_forged_symbol_count(self):
+        from game_tools import emit_runtime_descriptor
+
+        for name in ("main", "sdk"):
+            path = self.rewrites / name / f"{name}.patched.bin"
+            image = bytearray(path.read_bytes())
+            image[0x2600:0x2618] = image[0x3200:0x3218]
+            struct.pack_into("<Q", image, 0x3100 + 5 * 16 + 8, 0x2600)
+            path.write_bytes(image)
+            self.rewrite_rows[name]["patched_sha256"] = hashlib.sha256(image).hexdigest()
+        self.write_reports()
+        runtime_preflight.prepare(self.exefs, self.manifest, self.rewrites, self.output)
+        path = self.output / "runtime-modules.json"
+        data = json.loads(path.read_text())
+        data["modules"]["main"]["symbols"].append({})
+        data["summary"]["modules"]["main"]["symbols"] = 3
+        path.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, "Symbol rows mismatch"):
+            emit_runtime_descriptor.emit(self.exefs, self.output, self.rewrites,
+                                         self.work / "module-table.h")
+
+    def test_compact_descriptor_rejects_tables_in_writable_data(self):
+        from game_tools import emit_runtime_descriptor
+
+        runtime_preflight.prepare(self.exefs, self.manifest, self.rewrites, self.output)
+        with self.assertRaisesRegex(ValueError, "source table"):
+            emit_runtime_descriptor.emit(self.exefs, self.output, self.rewrites,
+                                         self.work / "module-table.h")
+
+    def test_compact_descriptor_requires_source_digest(self):
+        from game_tools import emit_runtime_descriptor
+
+        runtime_preflight.prepare(self.exefs, self.manifest, self.rewrites, self.output)
+        path = self.output / "runtime-modules.json"
+        data = json.loads(path.read_text())
+        data["modules"]["main"]["nso_sha256"] = None
+        path.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, "Invalid NSO SHA-256"):
+            emit_runtime_descriptor.emit(self.exefs, self.output, self.rewrites,
+                                         self.work / "module-table.h")
 
     def test_linkage_counts_only_referenced_symbols_and_excludes_rtld(self):
         def symbol(name, defined=False, binding=1, value=0):
