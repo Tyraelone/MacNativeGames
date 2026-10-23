@@ -89,7 +89,11 @@ def parse_symbols(image: bytes, raw_nso: bytes, layout: dict, tags: dict) -> lis
         require(offset < len(strings), "Invalid dynamic symbol name offset")
         end = strings.find(b"\0", offset)
         require(end >= 0, "Unterminated dynamic symbol name")
-        symbols.append({"name": strings[offset:end].decode("utf-8", errors="replace"),
+        try:
+            name = strings[offset:end].decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("Invalid UTF-8 dynamic symbol name") from error
+        symbols.append({"name": name,
                         "value": value, "size": size, "defined": bool(section),
                         "binding": info >> 4, "type": info & 15})
     return symbols

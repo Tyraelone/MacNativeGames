@@ -143,6 +143,16 @@ class RuntimePreflightTests(unittest.TestCase):
                          {"where": 0x3400, "kind": 1026, "symbol": 1, "addend": 0})
         self.assertEqual(data["modules"]["main"]["symbols"][1]["name"], "foo")
 
+    def test_invalid_utf8_symbol_name_is_rejected_before_runtime_lookup(self):
+        image_path = self.rewrites / "main/main.patched.bin"
+        image = bytearray(image_path.read_bytes())
+        image[0x2201] = 0xff
+        image_path.write_bytes(image)
+        self.rewrite_rows["main"]["patched_sha256"] = hashlib.sha256(image).hexdigest()
+        self.write_reports()
+        with self.assertRaisesRegex(ValueError, "Invalid UTF-8 dynamic symbol name"):
+            runtime_preflight.prepare(self.exefs, self.manifest, self.rewrites, self.output)
+
     def test_optional_subsdk_is_ordered_between_main_and_sdk(self):
         self.add_module("subsdk2")
         self.write_reports()
