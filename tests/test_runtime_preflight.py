@@ -3,7 +3,9 @@
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import struct
+import subprocess
 import tempfile
 import unittest
 
@@ -14,6 +16,69 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RuntimePreflightTests(unittest.TestCase):
+    def test_compact_descriptor_compiles_and_validates_source_tables(self):
+        from game_tools import emit_runtime_descriptor
+
+        for name in ("main", "sdk"):
+            path = self.rewrites / name / f"{name}.patched.bin"
+            image = bytearray(path.read_bytes())
+            image[0x2600:0x2618] = image[0x3200:0x3218]
+            struct.pack_into("<Q", image, 0x3100 + 5 * 16 + 8, 0x2600)
+            if name == "main":
+                struct.pack_into("<Q", image, 0x3100 + 9 * 16 + 8, 0x2800)
+                struct.pack_into("<Q", image, 0x3100 + 10 * 16 + 8, 24)
+                for index, pair in enumerate(((36, 0x2700), (35, 8), (37, 8), (0, 0)), 11):
+                    struct.pack_into("<qQ", image, 0x3100 + index * 16, *pair)
+                struct.pack_into("<Q", image, 0x2700, 0x3410)
+                struct.pack_into("<Q", image, 0x3410, 0x100)
+                struct.pack_into("<QQq", image, 0x2800, 0x3418, (1 << 32) | 1026, 0)
+            path.write_bytes(image)
+            self.rewrite_rows[name]["patched_sha256"] = hashlib.sha256(image).hexdigest()
+        gates = self.rewrites / "main/main.gates.tsv"
+        gates.write_text("0x8100\tsvc\t1\t0x100\n"
+                         "0x8104\tcntpct\t2\t0x104\n"
+                         "0x8108\tcntvct\t3\t0x108\n")
+        self.rewrite_rows["main"]["gates"] = 3
+        self.rewrite_rows["main"]["gates_sha256"] = hashlib.sha256(gates.read_bytes()).hexdigest()
+        self.write_reports()
+        runtime_preflight.prepare(self.exefs, self.manifest, self.rewrites, self.output)
+        header = self.work / "module-table.h"
+        report = emit_runtime_descriptor.emit(self.output, self.rewrites, header)
+        self.assertEqual(report["module_order"], ["main", "sdk"])
+        self.assertLess(header.stat().st_size, 8000)
+        compiler = shutil.which("cc") or shutil.which("clang")
+        if not compiler:
+            self.skipTest("C compiler required")
+        binary = self.work / "descriptor-probe"
+        result = subprocess.run(
+            [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2",
+             "-I", str(ROOT / "runtime_common"), "-I", str(self.work),
+             str(ROOT / "runtime_common/module_descriptor.c"),
+             str(ROOT / "runtime_common/symbol_view.c"),
+             str(ROOT / "runtime_common/reloc_stream.c"),
+             str(ROOT / "tests/module_descriptor_probe.c"), "-o", str(binary)],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = subprocess.run([str(binary), str(self.rewrites), "reject-invalid"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout),
+                         {"main": {"symbols": 2, "relocations": 3, "gates": 3},
+                          "sdk": {"symbols": 2, "relocations": 1, "gates": 1}})
+
+    def test_compact_descriptor_rejects_tampered_image_and_source_output(self):
+        from game_tools import emit_runtime_descriptor
+
+        runtime_preflight.prepare(self.exefs, self.manifest, self.rewrites, self.output)
+        image = self.rewrites / "main/main.patched.bin"
+        image.write_bytes(image.read_bytes() + b"x")
+        with self.assertRaisesRegex(ValueError, "SHA-256"):
+            emit_runtime_descriptor.emit(self.output, self.rewrites,
+                                         self.work / "module-table.h")
+        with self.assertRaisesRegex(ValueError, "outside"):
+            emit_runtime_descriptor.emit(self.output, self.rewrites,
+                                         ROOT / "module-table.h")
+
     def test_linkage_counts_only_referenced_symbols_and_excludes_rtld(self):
         def symbol(name, defined=False, binding=1, value=0):
             return {"name": name, "defined": defined, "binding": binding, "value": value}
